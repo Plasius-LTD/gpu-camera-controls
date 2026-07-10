@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - **Added**
+  - (placeholder)
+
+- **Changed**
+  - (placeholder)
+
+- **Fixed**
+  - (placeholder)
+
+- **Security**
+  - (placeholder)
+
+## [0.1.0] - 2026-07-10
+
+- **Added**
   - Created `@plasius/gpu-camera-controls` as the touch, pointer, keyboard,
     analog, and damping layer for `@plasius/gpu-camera`.
   - Added CameraControls-style one-finger rotate/look, two-finger dolly/truck,
@@ -22,3 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Security**
   - (placeholder)
+
+
+[0.1.0]: https://github.com/Plasius-LTD/gpu-camera-controls/releases/tag/v0.1.0
