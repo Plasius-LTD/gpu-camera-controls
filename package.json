@@ -1,0 +1,90 @@
+{
+  "name": "@plasius/gpu-camera-controls",
+  "version": "0.1.0",
+  "description": "Framework-agnostic touch, pointer, keyboard, and analog camera controls for Plasius GPU camera rigs.",
+  "type": "module",
+  "sideEffects": false,
+  "private": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./src/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "legal"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "node --check src/index.js",
+    "audit:eslint": "eslint . --max-warnings=0",
+    "audit:deps": "npm ls --all --omit=optional --omit=peer > /dev/null 2>&1 || true",
+    "audit:npm": "npm audit --audit-level=high --omit=dev",
+    "audit:test": "npm run test:coverage",
+    "lint": "eslint . --max-warnings=0",
+    "test": "npm run test:unit",
+    "test:unit": "node --test",
+    "test:coverage": "c8 --reporter=lcov --reporter=text node --test",
+    "pack:check": "node scripts/verify-public-package.cjs",
+    "prepublishOnly": "npm run build && npm run pack:check"
+  },
+  "keywords": [
+    "camera-controls",
+    "touch-controls",
+    "pointer-controls",
+    "camera",
+    "webgpu",
+    "gpu",
+    "plasius"
+  ],
+  "author": "Plasius LTD <development@plasius.co.uk>",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@plasius/gpu-camera": "^0.1.17"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "c8": "^11.0.0",
+    "eslint": "^10.6.0",
+    "globals": "^17.7.0",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Plasius-LTD/gpu-camera-controls.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Plasius-LTD/gpu-camera-controls/issues"
+  },
+  "homepage": "https://github.com/Plasius-LTD/gpu-camera-controls#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "funding": [
+    {
+      "type": "patreon",
+      "url": "https://www.patreon.com/c/plasiusltd/membership"
+    },
+    {
+      "type": "github",
+      "url": "https://github.com/sponsors/Plasius-LTD"
+    }
+  ],
+  "overrides": {
+    "minimatch": "^10.2.1"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
