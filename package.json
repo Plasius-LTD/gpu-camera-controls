@@ -62,7 +62,7 @@
   "author": "Plasius LTD <development@plasius.co.uk>",
   "license": "Apache-2.0",
   "dependencies": {
-    "@plasius/gpu-camera": "^0.1.17"
+    "@plasius/gpu-camera": "^0.1.18"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
