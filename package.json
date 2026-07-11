@@ -1,6 +1,6 @@
 {
   "name": "@plasius/gpu-camera-controls",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Framework-agnostic multimodal camera controls for Plasius GPU camera rigs across browser, gamepad, and XR inputs.",
   "type": "module",
   "sideEffects": false,

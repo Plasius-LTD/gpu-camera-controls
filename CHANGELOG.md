@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - **Added**
+  - (placeholder)
+
+- **Changed**
+  - (placeholder)
+
+- **Fixed**
+  - (placeholder)
+
+- **Security**
+  - (placeholder)
+
+## [0.1.1] - 2026-07-11
+
+- **Added**
   - Added multimodal control contracts for action frames, bindings, diagnostics,
     haptic effects, and deterministic recording/replay.
   - Added browser and XR subpath exports for DOM bindings, analog pads, XR hand
@@ -44,3 +58,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 [0.1.0]: https://github.com/Plasius-LTD/gpu-camera-controls/releases/tag/v0.1.0
+[0.1.1]: https://github.com/Plasius-LTD/gpu-camera-controls/releases/tag/v0.1.1
