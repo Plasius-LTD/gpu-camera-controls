@@ -1,4 +1,10 @@
-import { applyCameraControl, cameraViewModes } from "@plasius/gpu-camera";
+import {
+  applyCameraControl,
+  cameraViewModes,
+  resolveCameraComfortProfile,
+  resolveCameraLocomotionState,
+  resolveCameraRigFrame,
+} from "@plasius/gpu-camera";
 
 const EPSILON = 1e-6;
 const DEFAULT_UP = Object.freeze([0, 1, 0]);
@@ -28,6 +34,63 @@ export const gpuCameraControlsTouchActions = Object.freeze([
   "truck",
 ]);
 
+export const cameraControlActionKinds = Object.freeze([
+  "move",
+  "look",
+  "orbit",
+  "truck",
+  "dolly",
+  "elevate",
+  "roll",
+  "smooth-turn",
+  "snap-turn",
+  "teleport",
+  "focus",
+  "recenter",
+  "sprint",
+  "precision",
+]);
+
+export const cameraControlSourceFamilies = Object.freeze([
+  "touch",
+  "pen",
+  "mouse",
+  "keyboard",
+  "gamepad",
+  "xr-controller",
+  "xr-hand",
+  "external",
+]);
+
+const DEFAULT_BINDINGS = Object.freeze({
+  keyboard: Object.freeze({
+    moveForward: ["KeyW"],
+    moveBackward: ["KeyS"],
+    moveLeft: ["KeyA"],
+    moveRight: ["KeyD"],
+    elevateUp: ["Space"],
+    elevateDown: ["ControlLeft", "ControlRight"],
+    sprint: ["ShiftLeft", "ShiftRight"],
+    recenter: ["KeyR"],
+    precision: ["AltLeft", "AltRight"],
+  }),
+  gamepad: Object.freeze({
+    moveAxes: [0, 1],
+    lookAxes: [2, 3],
+    altitudeButtons: [6, 7],
+    sprintButtons: [10, 0],
+    precisionButtons: [4],
+    focusButtons: [2],
+    recenterButtons: [8],
+  }),
+  xr: Object.freeze({
+    moveAxes: [2, 3],
+    lookAxes: [0, 1],
+    snapTurnAxis: 2,
+    dominantHand: "right",
+  }),
+});
+
 const DEFAULT_OPTIONS = Object.freeze({
   viewMode: "spectator",
   minDistance: 2.5,
@@ -43,6 +106,10 @@ const DEFAULT_OPTIONS = Object.freeze({
   truckSensitivity: 0.0028,
   dollySensitivity: 0.018,
   wheelDollySensitivity: 0.01,
+  rollSensitivity: 0.85,
+  smoothTurnSpeed: Math.PI,
+  snapTurnDegrees: 30,
+  precisionMultiplier: 0.35,
   analogDeadzone: 0.12,
   smoothTime: 0.22,
   draggingSmoothTime: 0.1,
@@ -236,7 +303,10 @@ function gestureForPointers(viewMode, pointers) {
   if (pointers.length >= 3) return "truck";
   if (pointers.length === 2) return "dolly-truck";
   if (pointers.length === 1) {
-    return viewMode === "editor" || viewMode === "third-person" ? "rotate" : "look";
+    return viewMode === "editor" || viewMode === "third-person" || viewMode === "inspect"
+      || viewMode === "isometric"
+      ? "rotate"
+      : "look";
   }
   return "none";
 }
@@ -244,6 +314,179 @@ function gestureForPointers(viewMode, pointers) {
 function settleAlpha(deltaSeconds, smoothTime) {
   if (smoothTime <= EPSILON) return 1;
   return clamp(1 - Math.exp(-Math.max(0, deltaSeconds) / smoothTime), 0, 1);
+}
+
+function smoothCamera(current, target, alpha) {
+  const next = cloneCamera(target);
+  next.transform.position = lerpVec3(current.transform.position, target.transform.position, alpha);
+  next.transform.target = lerpVec3(current.transform.target, target.transform.target, alpha);
+  next.transform.up = normalizeVec3(lerpVec3(current.transform.up, target.transform.up, alpha), DEFAULT_UP);
+  return next;
+}
+
+function normalizeBindings(bindings = {}) {
+  return {
+    keyboard: {
+      ...DEFAULT_BINDINGS.keyboard,
+      ...(bindings.keyboard ?? {}),
+    },
+    gamepad: {
+      ...DEFAULT_BINDINGS.gamepad,
+      ...(bindings.gamepad ?? {}),
+    },
+    xr: {
+      ...DEFAULT_BINDINGS.xr,
+      ...(bindings.xr ?? {}),
+    },
+  };
+}
+
+function normalizeActionFrame(input = {}) {
+  return {
+    move: normalizeAnalogVector(input.move),
+    look: normalizeAnalogVector(input.look),
+    orbit: normalizeAnalogVector(input.orbit),
+    truck: normalizeAnalogVector(input.truck),
+    dolly: finiteNumber(input.dolly, 0),
+    elevate: clamp(finiteNumber(input.elevate, 0), -1, 1),
+    roll: clamp(finiteNumber(input.roll, 0), -1, 1),
+    smoothTurn: clamp(finiteNumber(input.smoothTurn, 0), -1, 1),
+    snapTurn: clamp(finiteNumber(input.snapTurn, 0), -1, 1),
+    sprint: input.sprint === true,
+    precision: input.precision === true,
+    focus: input.focus === true,
+    recenter: input.recenter === true,
+    teleport:
+      input.teleport && typeof input.teleport === "object"
+        ? {
+            position: Array.isArray(input.teleport.position)
+              ? cloneVec3(input.teleport.position)
+              : null,
+            target: Array.isArray(input.teleport.target)
+              ? cloneVec3(input.teleport.target)
+              : null,
+          }
+        : null,
+    source:
+      input.source && typeof input.source === "object"
+        ? {
+            id: String(input.source.id ?? "external"),
+            family: String(input.source.family ?? "external"),
+            kind: String(input.source.kind ?? "input"),
+            label: input.source.label == null ? null : String(input.source.label),
+          }
+        : null,
+    viewerPose:
+      input.viewerPose && typeof input.viewerPose === "object"
+        ? { ...input.viewerPose }
+        : null,
+    locomotion:
+      input.locomotion && typeof input.locomotion === "object"
+        ? { ...input.locomotion }
+        : null,
+    haptics: Array.isArray(input.haptics) ? [...input.haptics] : [],
+    debug:
+      input.debug && typeof input.debug === "object"
+        ? { ...input.debug }
+        : null,
+  };
+}
+
+function mergeActionFrames(base, input) {
+  const next = normalizeActionFrame(base);
+  const normalized = normalizeActionFrame(input);
+  return {
+    move: {
+      x: clamp(next.move.x + normalized.move.x, -1, 1),
+      y: clamp(next.move.y + normalized.move.y, -1, 1),
+    },
+    look: {
+      x: clamp(next.look.x + normalized.look.x, -1, 1),
+      y: clamp(next.look.y + normalized.look.y, -1, 1),
+    },
+    orbit: {
+      x: clamp(next.orbit.x + normalized.orbit.x, -1, 1),
+      y: clamp(next.orbit.y + normalized.orbit.y, -1, 1),
+    },
+    truck: {
+      x: clamp(next.truck.x + normalized.truck.x, -1, 1),
+      y: clamp(next.truck.y + normalized.truck.y, -1, 1),
+    },
+    dolly: next.dolly + normalized.dolly,
+    elevate: clamp(next.elevate + normalized.elevate, -1, 1),
+    roll: clamp(next.roll + normalized.roll, -1, 1),
+    smoothTurn: clamp(next.smoothTurn + normalized.smoothTurn, -1, 1),
+    snapTurn: normalized.snapTurn !== 0 ? normalized.snapTurn : next.snapTurn,
+    sprint: next.sprint || normalized.sprint,
+    precision: next.precision || normalized.precision,
+    focus: next.focus || normalized.focus,
+    recenter: next.recenter || normalized.recenter,
+    teleport: normalized.teleport ?? next.teleport,
+    source: normalized.source ?? next.source,
+    viewerPose: normalized.viewerPose ?? next.viewerPose,
+    locomotion: normalized.locomotion ?? next.locomotion,
+    haptics: [...next.haptics, ...normalized.haptics],
+    debug: normalized.debug ?? next.debug,
+  };
+}
+
+function createEmptyActionFrame() {
+  return normalizeActionFrame({});
+}
+
+function normalizeGamepadSnapshot(gamepad, index) {
+  if (!gamepad) {
+    return null;
+  }
+  const axes = Array.isArray(gamepad.axes)
+    ? gamepad.axes.map((axis) => clamp(finiteNumber(axis, 0), -1, 1))
+    : [];
+  const buttons = Array.isArray(gamepad.buttons)
+    ? gamepad.buttons.map((button, buttonIndex) => ({
+        index: buttonIndex,
+        pressed: button?.pressed === true,
+        touched: button?.touched === true,
+        value: clamp(finiteNumber(button?.value, 0), 0, 1),
+      }))
+    : [];
+  return {
+    id: String(gamepad.id ?? `gamepad-${index}`),
+    index,
+    mapping: String(gamepad.mapping ?? ""),
+    connected: gamepad.connected !== false,
+    axes,
+    buttons,
+    hapticActuators: Array.isArray(gamepad.hapticActuators)
+      ? [...gamepad.hapticActuators]
+      : [],
+  };
+}
+
+function normalizeXrSourceSnapshot(source, index) {
+  return {
+    id: String(source?.id ?? `xr-source-${index}`),
+    family: source?.kind === "hand" ? "xr-hand" : "xr-controller",
+    handedness: String(source?.handedness ?? "none"),
+    kind: String(source?.kind ?? "controller"),
+    gamepad: source?.gamepad ?? null,
+    hand: source?.hand ?? null,
+    targetRayPose: source?.targetRayPose ?? null,
+    gripPose: source?.gripPose ?? null,
+    selectPressed: source?.selectPressed === true,
+    squeezePressed: source?.squeezePressed === true,
+  };
+}
+
+function describeSource(input) {
+  if (!input) {
+    return null;
+  }
+  return {
+    id: String(input.id ?? "external"),
+    family: String(input.family ?? "external"),
+    kind: String(input.kind ?? "input"),
+    label: input.label == null ? null : String(input.label),
+  };
 }
 
 function applyFloor(camera, terrainFloorProvider, floorOffset, viewMode) {
@@ -268,12 +511,52 @@ function applyFloor(camera, terrainFloorProvider, floorOffset, viewMode) {
   return next;
 }
 
-function smoothCamera(current, target, alpha) {
-  const next = cloneCamera(target);
-  next.transform.position = lerpVec3(current.transform.position, target.transform.position, alpha);
-  next.transform.target = lerpVec3(current.transform.target, target.transform.target, alpha);
-  next.transform.up = normalizeVec3(lerpVec3(current.transform.up, target.transform.up, alpha), DEFAULT_UP);
-  return next;
+function applyCollision(camera, collisionProvider, viewMode) {
+  if (typeof collisionProvider !== "function") {
+    return {
+      camera,
+      blocked: false,
+      metadata: null,
+    };
+  }
+  const resolution = collisionProvider(
+    [...camera.transform.position],
+    [...camera.transform.target],
+    { viewMode, camera: cloneCamera(camera) }
+  );
+  if (!resolution || typeof resolution !== "object") {
+    return {
+      camera,
+      blocked: false,
+      metadata: null,
+    };
+  }
+  const next = cloneCamera(camera);
+  if (Array.isArray(resolution.position)) {
+    next.transform.position = cloneVec3(resolution.position, next.transform.position);
+  }
+  if (Array.isArray(resolution.target)) {
+    next.transform.target = cloneVec3(resolution.target, next.transform.target);
+  }
+  if (Array.isArray(resolution.up)) {
+    next.transform.up = normalizeVec3(cloneVec3(resolution.up, next.transform.up), DEFAULT_UP);
+  }
+  return {
+    camera: next,
+    blocked: resolution.blocked === true,
+    metadata:
+      resolution.metadata && typeof resolution.metadata === "object"
+        ? { ...resolution.metadata }
+        : null,
+  };
+}
+
+function shallowEqualVec3(left, right, epsilon = 1e-3) {
+  return (
+    Math.abs(left[0] - right[0]) <= epsilon &&
+    Math.abs(left[1] - right[1]) <= epsilon &&
+    Math.abs(left[2] - right[2]) <= epsilon
+  );
 }
 
 export function createCameraControls(options = {}) {
@@ -293,20 +576,47 @@ export function createCameraControls(options = {}) {
   let terrainFloorProvider = typeof options.terrainFloorProvider === "function"
     ? options.terrainFloorProvider
     : null;
+  let collisionProvider = typeof options.collisionProvider === "function"
+    ? options.collisionProvider
+    : null;
+  let bindings = normalizeBindings(options.bindings);
+  let comfortProfile = resolveCameraComfortProfile(options.comfortProfile ?? {});
   let currentCamera = normalizeCamera(options.camera);
   let targetCamera = cloneCamera(currentCamera);
   let activeGesture = "none";
   let lastGestureCenter = null;
   let lastGestureDistance = 0;
+  let queuedFrameInput = createEmptyActionFrame();
+  let playback = null;
+  let activeDevice = "none";
+  let diagnosticsContext = {};
+  let lastRecording = null;
 
   const pointers = new Map();
   const keys = new Set();
+  const deviceStates = new Map();
   let analogInput = {
     move: { x: 0, y: 0 },
     look: { x: 0, y: 0 },
     altitude: 0,
     sprint: false,
   };
+  let hapticQueue = [];
+  let recording = {
+    active: false,
+    label: null,
+    frames: [],
+  };
+  let gamepads = [];
+  let xrState = {
+    frame: null,
+    sources: [],
+    viewer: null,
+    locomotion: resolveCameraLocomotionState({}),
+    mode: null,
+  };
+  let gamepadTurnLatch = 0;
+  let xrTurnLatch = 0;
 
   const controlOptions = () => ({
     minDistance: config.minDistance,
@@ -333,8 +643,20 @@ export function createCameraControls(options = {}) {
     }
   };
 
+  const queueHapticEffect = (effect = {}) => {
+    hapticQueue.push({
+      target: effect.target ?? null,
+      amplitude: clamp(finiteNumber(effect.amplitude, 0.5), 0, 1),
+      durationMs: Math.max(1, finiteNumber(effect.durationMs, 35)),
+      family: effect.family == null ? null : String(effect.family),
+    });
+    return controller;
+  };
+
   const applyControl = (control) => {
     targetCamera = applyCameraControl(targetCamera, control, controlOptions());
+    const collision = applyCollision(targetCamera, collisionProvider, viewMode);
+    targetCamera = collision.camera;
     targetCamera = applyFloor(targetCamera, terrainFloorProvider, config.terrainFloorOffset, viewMode);
   };
 
@@ -346,16 +668,269 @@ export function createCameraControls(options = {}) {
     applyControl({ type: "truck", delta });
   };
 
+  const setRigForMode = () => {
+    if (viewMode === "xr-vr" || viewMode === "xr-ar") {
+      return;
+    }
+    const basis = cameraBasis(targetCamera);
+    const rigFrame = resolveCameraRigFrame({
+      viewMode,
+      camera: targetCamera,
+      anchors: {
+        target: cloneVec3(targetCamera.transform.target),
+        head: cloneVec3(targetCamera.transform.position),
+        forward: basis.flatForward,
+        up: [0, 1, 0],
+      },
+      activeControl: true,
+    });
+    targetCamera = rigFrame.camera;
+    currentCamera = rigFrame.camera;
+  };
+
+  const updateActiveSource = (source) => {
+    const descriptor = describeSource(source);
+    if (!descriptor) {
+      return;
+    }
+    activeDevice = descriptor.family;
+    deviceStates.set(descriptor.id, {
+      ...descriptor,
+      lastSeenAt: Date.now(),
+    });
+  };
+
+  const buildKeyboardState = () => {
+    const moveForward = (keys.has("KeyW") ? 1 : 0) - (keys.has("KeyS") ? 1 : 0);
+    const moveRight = (keys.has("KeyD") ? 1 : 0) - (keys.has("KeyA") ? 1 : 0);
+    const elevate = (keys.has("Space") ? 1 : 0)
+      - (keys.has("ControlLeft") || keys.has("ControlRight") ? 1 : 0);
+    return {
+      move: { x: moveRight, y: moveForward },
+      elevate,
+      sprint: keys.has("ShiftLeft") || keys.has("ShiftRight"),
+      precision: keys.has("AltLeft") || keys.has("AltRight"),
+      recenter: keys.has("KeyR"),
+    };
+  };
+
+  const deriveGamepadInput = () => {
+    const primary = gamepads.find((gamepad) => gamepad?.connected);
+    if (!primary) {
+      gamepadTurnLatch = 0;
+      return createEmptyActionFrame();
+    }
+
+    const leftX = finiteNumber(primary.axes[0], 0);
+    const leftY = -finiteNumber(primary.axes[1], 0);
+    const rightX = finiteNumber(primary.axes[2], 0);
+    const rightY = -finiteNumber(primary.axes[3], 0);
+    const leftTrigger = finiteNumber(primary.buttons[6]?.value, 0);
+    const rightTrigger = finiteNumber(primary.buttons[7]?.value, 0);
+    let snapTurn = 0;
+    if (Math.abs(rightX) > 0.78 && gamepadTurnLatch === 0) {
+      snapTurn = rightX > 0 ? 1 : -1;
+      gamepadTurnLatch = snapTurn;
+    } else if (Math.abs(rightX) < 0.45) {
+      gamepadTurnLatch = 0;
+    }
+
+    updateActiveSource({
+      id: primary.id,
+      family: "gamepad",
+      kind: "standard",
+      label: primary.id,
+    });
+
+    return normalizeActionFrame({
+      move: { x: leftX, y: leftY },
+      look: { x: rightX, y: rightY },
+      smoothTurn: 0,
+      snapTurn,
+      elevate: rightTrigger - leftTrigger,
+      sprint: primary.buttons[10]?.pressed === true || primary.buttons[0]?.pressed === true,
+      precision: primary.buttons[4]?.pressed === true,
+      focus: primary.buttons[2]?.pressed === true,
+      recenter: primary.buttons[8]?.pressed === true,
+      source: {
+        id: primary.id,
+        family: "gamepad",
+        kind: "standard",
+        label: primary.id,
+      },
+    });
+  };
+
+  const deriveXrInput = () => {
+    if (!xrState.viewer) {
+      xrTurnLatch = 0;
+      return createEmptyActionFrame();
+    }
+
+    const controllers = xrState.sources.filter((source) => source.family === "xr-controller");
+    const dominantHand = bindings.xr.dominantHand;
+    const moveSource = controllers.find((source) => source.handedness === "left") ?? controllers[0] ?? null;
+    const lookSource = controllers.find((source) => source.handedness === dominantHand)
+      ?? controllers[1]
+      ?? moveSource;
+
+    let snapTurn = 0;
+    const turnAxis = finiteNumber(lookSource?.gamepad?.axes?.[bindings.xr.snapTurnAxis], 0);
+    if (Math.abs(turnAxis) > 0.78 && xrTurnLatch === 0) {
+      snapTurn = turnAxis > 0 ? 1 : -1;
+      xrTurnLatch = snapTurn;
+    } else if (Math.abs(turnAxis) < 0.45) {
+      xrTurnLatch = 0;
+    }
+
+    if (lookSource) {
+      updateActiveSource({
+        id: lookSource.id,
+        family: lookSource.family,
+        kind: lookSource.kind,
+        label: lookSource.handedness,
+      });
+    }
+
+    return normalizeActionFrame({
+      move: {
+        x: finiteNumber(moveSource?.gamepad?.axes?.[0], 0),
+        y: -finiteNumber(moveSource?.gamepad?.axes?.[1], 0),
+      },
+      look: {
+        x: finiteNumber(lookSource?.gamepad?.axes?.[0], 0),
+        y: -finiteNumber(lookSource?.gamepad?.axes?.[1], 0),
+      },
+      snapTurn,
+      sprint: moveSource?.squeezePressed === true || lookSource?.squeezePressed === true,
+      focus: lookSource?.selectPressed === true,
+      source: lookSource
+        ? {
+            id: lookSource.id,
+            family: lookSource.family,
+            kind: lookSource.kind,
+            label: lookSource.handedness,
+          }
+        : null,
+      viewerPose: {
+        position: xrState.viewer.position,
+        orientation: xrState.viewer.orientation,
+        forward: xrState.viewer.forward,
+        up: xrState.viewer.up,
+        referenceSpaceType: xrState.frame?.referenceSpaceType ?? "local-floor",
+        emulatedPosition: xrState.viewer.emulatedPosition,
+        views: xrState.viewer.views,
+      },
+      locomotion: xrState.locomotion,
+    });
+  };
+
+  const applyXrRig = (delta, inputState, speedMultiplier) => {
+    const viewerForward = normalizeVec3(xrState.viewer.forward, [0, 0, -1]);
+    const viewerRight = normalizeVec3(crossVec3(viewerForward, xrState.viewer.up ?? DEFAULT_UP), [1, 0, 0]);
+    const flatForward = normalizeVec3([viewerForward[0], 0, viewerForward[2]], [0, 0, -1]);
+    const flatRight = normalizeVec3([viewerRight[0], 0, viewerRight[2]], [1, 0, 0]);
+    const speed = config.moveSpeed * comfortProfile.movementSpeed * speedMultiplier;
+    const locomotion = resolveCameraLocomotionState(xrState.locomotion);
+
+    if (Math.abs(inputState.snapTurn) > EPSILON) {
+      locomotion.yaw += (Math.PI / 180) * config.snapTurnDegrees * Math.sign(inputState.snapTurn);
+      queueHapticEffect({
+        target: inputState.source ? { id: inputState.source.id } : null,
+        amplitude: 0.45,
+        durationMs: 18,
+        family: "xr-controller",
+      });
+    }
+
+    if (Math.abs(inputState.smoothTurn) > EPSILON || Math.abs(inputState.look.x) > EPSILON) {
+      locomotion.yaw += -(inputState.smoothTurn + inputState.look.x) * config.smoothTurnSpeed * delta;
+    }
+    if (Math.abs(inputState.look.y) > EPSILON) {
+      locomotion.pitch = clamp(
+        locomotion.pitch - inputState.look.y * config.analogLookSpeed * delta,
+        -Math.PI / 3,
+        Math.PI / 3
+      );
+    }
+
+    const moveX = inputState.move.x;
+    const moveY = inputState.move.y;
+    if (Math.abs(moveX) > EPSILON || Math.abs(moveY) > EPSILON) {
+      const horizontal = addVec3(
+        scaleVec3(flatRight, moveX * speed * delta),
+        scaleVec3(flatForward, moveY * speed * delta)
+      );
+      locomotion.origin = addVec3(locomotion.origin, horizontal);
+    }
+
+    if (Math.abs(inputState.elevate) > EPSILON && comfortProfile.grounded === false) {
+      locomotion.origin = addVec3(
+        locomotion.origin,
+        [0, inputState.elevate * speed * delta, 0]
+      );
+    }
+
+    if (inputState.teleport?.position) {
+      locomotion.origin = cloneVec3(inputState.teleport.position, locomotion.origin);
+      queueHapticEffect({
+        target: inputState.source ? { id: inputState.source.id } : null,
+        amplitude: 0.6,
+        durationMs: 28,
+        family: inputState.source?.family ?? "xr-controller",
+      });
+    }
+
+    if (inputState.recenter) {
+      locomotion.origin = [0, 0, 0];
+      locomotion.yaw = 0;
+      locomotion.pitch = 0;
+      locomotion.roll = 0;
+    }
+
+    xrState.locomotion = locomotion;
+    const rigFrame = resolveCameraRigFrame({
+      viewMode,
+      camera: targetCamera,
+      pose: inputState.viewerPose,
+      locomotion,
+      comfort: comfortProfile,
+      collisionProvider: collisionProvider ?? undefined,
+    });
+    targetCamera = applyFloor(rigFrame.camera, terrainFloorProvider, config.terrainFloorOffset, viewMode);
+  };
+
+  const applyPlaybackFrame = () => {
+    if (!playback || playback.index >= playback.frames.length) {
+      playback = null;
+      return false;
+    }
+    const frame = playback.frames[playback.index];
+    playback.index += 1;
+    if (frame?.targetCamera) {
+      targetCamera = normalizeCamera(frame.targetCamera);
+    }
+    if (frame?.camera) {
+      currentCamera = normalizeCamera(frame.camera);
+    } else {
+      currentCamera = cloneCamera(targetCamera);
+    }
+    viewMode = normalizeViewMode(frame?.viewMode ?? viewMode);
+    return true;
+  };
+
   const controller = {
     setViewMode(nextViewMode) {
       viewMode = normalizeViewMode(nextViewMode);
       setGestureState();
+      setRigForMode();
       return controller;
     },
 
     setCamera(camera) {
       currentCamera = normalizeCamera(camera);
       targetCamera = cloneCamera(currentCamera);
+      setRigForMode();
       return controller;
     },
 
@@ -366,10 +941,44 @@ export function createCameraControls(options = {}) {
       return controller;
     },
 
+    setCollisionProvider(provider) {
+      collisionProvider = typeof provider === "function" ? provider : null;
+      return controller;
+    },
+
+    setBindings(nextBindings) {
+      bindings = normalizeBindings(nextBindings);
+      return controller;
+    },
+
+    getBindings() {
+      return bindings;
+    },
+
+    setComfortProfile(profile = {}) {
+      comfortProfile = resolveCameraComfortProfile(profile);
+      return controller;
+    },
+
+    getComfortProfile() {
+      return comfortProfile;
+    },
+
+    setContext(context = {}) {
+      diagnosticsContext = context && typeof context === "object" ? { ...context } : {};
+      return controller;
+    },
+
     handlePointerDown(event) {
       const pointer = pointerFromEvent(event);
       if (!Number.isFinite(pointer.pointerId)) return controller;
       pointers.set(pointer.pointerId, pointer);
+      updateActiveSource({
+        id: `pointer:${pointer.pointerId}`,
+        family: pointer.pointerType === "pen" ? "pen" : pointer.pointerType === "mouse" ? "mouse" : "touch",
+        kind: pointer.pointerType,
+        label: pointer.pointerType,
+      });
       setGestureState();
       return controller;
     },
@@ -444,7 +1053,8 @@ export function createCameraControls(options = {}) {
 
     handleWheel(event) {
       const deltaY = finiteNumber(event.deltaY, 0);
-      if (viewMode === "editor" || viewMode === "third-person") {
+      if (viewMode === "editor" || viewMode === "third-person" || viewMode === "inspect"
+        || viewMode === "top-down" || viewMode === "isometric") {
         applyControl({
           type: "dolly",
           distance: -deltaY * config.wheelDollySensitivity,
@@ -455,7 +1065,15 @@ export function createCameraControls(options = {}) {
 
     handleKeyDown(event) {
       const code = String(event.code ?? "");
-      if (code) keys.add(code);
+      if (code) {
+        keys.add(code);
+        updateActiveSource({
+          id: "keyboard",
+          family: "keyboard",
+          kind: "keys",
+          label: "Keyboard",
+        });
+      }
       return controller;
     },
 
@@ -475,61 +1093,326 @@ export function createCameraControls(options = {}) {
       return controller;
     },
 
+    applyInputFrame(input = {}) {
+      queuedFrameInput = mergeActionFrames(queuedFrameInput, input);
+      if (queuedFrameInput.source) {
+        updateActiveSource(queuedFrameInput.source);
+      }
+      if (queuedFrameInput.viewerPose) {
+        xrState.viewer = queuedFrameInput.viewerPose;
+      }
+      if (queuedFrameInput.locomotion) {
+        xrState.locomotion = resolveCameraLocomotionState(queuedFrameInput.locomotion);
+      }
+      for (const haptic of queuedFrameInput.haptics) {
+        queueHapticEffect(haptic);
+      }
+      return controller;
+    },
+
+    ingestGamepads(inputGamepads = []) {
+      gamepads = Array.from(inputGamepads)
+        .map((gamepad, index) => normalizeGamepadSnapshot(gamepad, index))
+        .filter(Boolean);
+      return controller;
+    },
+
+    ingestXrFrame(snapshot = {}) {
+      xrState.frame = snapshot;
+      xrState.mode = snapshot.sessionMode ?? xrState.mode;
+      xrState.viewer = snapshot.viewer ?? xrState.viewer;
+      xrState.sources = Array.isArray(snapshot.inputSources)
+        ? snapshot.inputSources.map((source, index) => normalizeXrSourceSnapshot(source, index))
+        : [];
+      return controller;
+    },
+
+    queueHapticEffect,
+
+    consumeHapticEffects() {
+      const effects = hapticQueue.map((effect) => ({ ...effect }));
+      hapticQueue = [];
+      return effects;
+    },
+
+    beginRecording(label = null) {
+      recording = {
+        active: true,
+        label: label == null ? null : String(label),
+        frames: [],
+      };
+      return controller;
+    },
+
+    stopRecording() {
+      recording = {
+        ...recording,
+        active: false,
+      };
+      lastRecording = {
+        label: recording.label,
+        frames: recording.frames.map((frame) => ({
+          ...frame,
+          camera: cloneCamera(frame.camera),
+          targetCamera: cloneCamera(frame.targetCamera),
+        })),
+      };
+      return lastRecording;
+    },
+
+    clearRecording() {
+      recording = {
+        active: false,
+        label: null,
+        frames: [],
+      };
+      lastRecording = null;
+      playback = null;
+      return controller;
+    },
+
+    playRecording(nextRecording) {
+      const frames = Array.isArray(nextRecording?.frames) ? nextRecording.frames : [];
+      playback = {
+        index: 0,
+        frames,
+      };
+      return controller;
+    },
+
+    getRecording() {
+      return lastRecording ?? {
+        label: recording.label,
+        frames: recording.frames,
+      };
+    },
+
+    getDiagnostics() {
+      return {
+        activeDevice,
+        activeGesture,
+        activeSourceIds: [...deviceStates.keys()],
+        sources: [...deviceStates.values()].map((value) => ({ ...value })),
+        bindings,
+        comfortProfile,
+        recordingActive: recording.active,
+        xrMode: xrState.mode,
+        hasViewerPose: Boolean(xrState.viewer),
+        context: {
+          ...diagnosticsContext,
+        },
+      };
+    },
+
     update(deltaSeconds = 0) {
+      if (applyPlaybackFrame()) {
+        return controller.getFrame();
+      }
+
       const delta = clamp(finiteNumber(deltaSeconds, 0), 0, 0.1);
-      const move = applyDeadzone(normalizeAnalogVector(analogInput.move), config.analogDeadzone);
-      const look = applyDeadzone(normalizeAnalogVector(analogInput.look), config.analogDeadzone);
-      const keyForward = (keys.has("KeyW") ? 1 : 0) - (keys.has("KeyS") ? 1 : 0);
-      const keyRight = (keys.has("KeyD") ? 1 : 0) - (keys.has("KeyA") ? 1 : 0);
-      const keyAltitude = (keys.has("Space") ? 1 : 0)
-        - (keys.has("ControlLeft") || keys.has("ControlRight") ? 1 : 0);
-      const sprint = analogInput.sprint || keys.has("ShiftLeft") || keys.has("ShiftRight");
-      const speed = (viewMode === "editor" || viewMode === "spectator"
-        ? config.editorMoveSpeed
-        : config.moveSpeed) * (sprint ? config.sprintMultiplier : 1);
+      const analogMove = applyDeadzone(normalizeAnalogVector(analogInput.move), config.analogDeadzone);
+      const analogLook = applyDeadzone(normalizeAnalogVector(analogInput.look), config.analogDeadzone);
+      const keyboard = buildKeyboardState();
+      const gamepadInput = deriveGamepadInput();
+      const xrInput = deriveXrInput();
+      const queued = queuedFrameInput;
+      queuedFrameInput = createEmptyActionFrame();
 
-      const moveX = clamp(move.x + keyRight, -1, 1);
-      const moveY = clamp(move.y + keyForward, -1, 1);
-      const moveLength = Math.hypot(moveX, moveY);
-      if (moveLength > EPSILON) {
-        const normalizedX = moveX / Math.max(1, moveLength);
-        const normalizedY = moveY / Math.max(1, moveLength);
-        const { flatForward, flatRight } = cameraBasis(targetCamera);
-        const horizontal = addVec3(
-          scaleVec3(flatRight, normalizedX * speed * delta),
-          scaleVec3(flatForward, normalizedY * speed * delta)
-        );
-        applyControl({ type: "truck", delta: horizontal });
+      const moveState = normalizeAnalogVector({
+        x: clamp(
+          analogMove.x + keyboard.move.x + gamepadInput.move.x + xrInput.move.x + queued.move.x,
+          -1,
+          1
+        ),
+        y: clamp(
+          analogMove.y + keyboard.move.y + gamepadInput.move.y + xrInput.move.y + queued.move.y,
+          -1,
+          1
+        ),
+      });
+      const lookState = normalizeAnalogVector({
+        x: clamp(
+          analogLook.x + gamepadInput.look.x + xrInput.look.x + queued.look.x,
+          -1,
+          1
+        ),
+        y: clamp(
+          analogLook.y + gamepadInput.look.y + xrInput.look.y + queued.look.y,
+          -1,
+          1
+        ),
+      });
+      const orbitState = normalizeAnalogVector(queued.orbit);
+      const truckState = normalizeAnalogVector(queued.truck);
+      const elevateState = clamp(
+        analogInput.altitude + keyboard.elevate + gamepadInput.elevate + xrInput.elevate + queued.elevate,
+        -1,
+        1
+      );
+      const sprint = analogInput.sprint
+        || keyboard.sprint
+        || gamepadInput.sprint
+        || xrInput.sprint
+        || queued.sprint;
+      const precision = keyboard.precision
+        || gamepadInput.precision
+        || xrInput.precision
+        || queued.precision;
+      const speedMultiplier = (sprint ? config.sprintMultiplier : 1)
+        * (precision ? config.precisionMultiplier : 1);
+
+      if (queued.teleport || gamepadInput.focus || xrInput.focus || queued.focus) {
+        queueHapticEffect({
+          target: queued.source ? { id: queued.source.id } : null,
+          amplitude: 0.35,
+          durationMs: 16,
+          family: queued.source?.family ?? null,
+        });
       }
 
-      const altitude = clamp(analogInput.altitude + keyAltitude, -1, 1);
-      if (Math.abs(altitude) > EPSILON && (viewMode === "editor" || viewMode === "spectator")) {
-        applyControl({ type: "truck", delta: [0, altitude * speed * delta, 0] });
-      }
+      const usingXrRig = (viewMode === "xr-vr" || viewMode === "xr-ar") && xrState.viewer;
+      if (usingXrRig) {
+        applyXrRig(delta, mergeActionFrames(mergeActionFrames(gamepadInput, xrInput), queued), speedMultiplier);
+      } else {
+        const speed = (viewMode === "editor" || viewMode === "spectator" || viewMode === "top-down"
+          ? config.editorMoveSpeed
+          : config.moveSpeed) * speedMultiplier;
 
-      if (Math.abs(look.x) > EPSILON || Math.abs(look.y) > EPSILON) {
-        const yawDelta = -look.x * config.analogLookSpeed * delta;
-        const pitchDelta = -look.y * config.analogLookSpeed * delta;
-        if (viewMode === "editor" || viewMode === "third-person") {
+        if (Math.abs(moveState.x) > EPSILON || Math.abs(moveState.y) > EPSILON) {
+          const { flatForward, flatRight } = cameraBasis(targetCamera);
+          const horizontal = addVec3(
+            scaleVec3(flatRight, moveState.x * speed * delta),
+            scaleVec3(flatForward, moveState.y * speed * delta)
+          );
+          applyControl({ type: "truck", delta: horizontal });
+        }
+
+        if (Math.abs(elevateState) > EPSILON && (viewMode === "editor" || viewMode === "spectator")) {
+          applyControl({ type: "truck", delta: [0, elevateState * speed * delta, 0] });
+        }
+
+        if (Math.abs(queued.snapTurn) > EPSILON || Math.abs(gamepadInput.snapTurn) > EPSILON) {
+          const snapDirection = Math.sign(queued.snapTurn || gamepadInput.snapTurn);
+          applyControl({
+            type: viewMode === "editor" || viewMode === "third-person" || viewMode === "inspect"
+              ? "orbit"
+              : "look",
+            deltaAzimuth: 0,
+            deltaYaw: 0,
+            deltaPolar: 0,
+            deltaPitch: 0,
+          });
+          const yawDelta = -(Math.PI / 180) * config.snapTurnDegrees * snapDirection;
+          if (viewMode === "editor" || viewMode === "third-person" || viewMode === "inspect"
+            || viewMode === "isometric") {
+            applyControl({ type: "orbit", deltaAzimuth: yawDelta, deltaPolar: 0 });
+          } else {
+            applyControl({ type: "look", deltaYaw: yawDelta, deltaPitch: 0 });
+          }
+          queueHapticEffect({
+            target: queued.source ? { id: queued.source.id } : null,
+            amplitude: 0.45,
+            durationMs: 18,
+            family: queued.source?.family ?? null,
+          });
+        }
+
+        if (Math.abs(queued.smoothTurn) > EPSILON) {
+          const yawDelta = -queued.smoothTurn * config.smoothTurnSpeed * delta;
+          if (viewMode === "editor" || viewMode === "third-person" || viewMode === "inspect"
+            || viewMode === "isometric") {
+            applyControl({ type: "orbit", deltaAzimuth: yawDelta, deltaPolar: 0 });
+          } else {
+            applyControl({ type: "look", deltaYaw: yawDelta, deltaPitch: 0 });
+          }
+        }
+
+        if (Math.abs(lookState.x) > EPSILON || Math.abs(lookState.y) > EPSILON) {
+          const yawDelta = -lookState.x * config.analogLookSpeed * delta;
+          const pitchDelta = -lookState.y * config.analogLookSpeed * delta;
+          if (viewMode === "editor" || viewMode === "third-person" || viewMode === "inspect"
+            || viewMode === "isometric") {
+            applyControl({
+              type: "orbit",
+              deltaAzimuth: yawDelta,
+              deltaPolar: -pitchDelta,
+            });
+          } else {
+            applyControl({
+              type: "look",
+              deltaYaw: yawDelta,
+              deltaPitch: pitchDelta,
+            });
+          }
+        }
+
+        if (Math.abs(orbitState.x) > EPSILON || Math.abs(orbitState.y) > EPSILON) {
           applyControl({
             type: "orbit",
-            deltaAzimuth: yawDelta,
-            deltaPolar: -pitchDelta,
+            deltaAzimuth: -orbitState.x * config.rotateSensitivity,
+            deltaPolar: orbitState.y * config.rotateSensitivity,
           });
-        } else {
+        }
+
+        if (Math.abs(truckState.x) > EPSILON || Math.abs(truckState.y) > EPSILON) {
+          applyScreenTruck(
+            truckState.x * 140 * delta,
+            truckState.y * 140 * delta
+          );
+        }
+
+        if (Math.abs(queued.dolly) > EPSILON) {
           applyControl({
-            type: "look",
-            deltaYaw: yawDelta,
-            deltaPitch: pitchDelta,
+            type: "dolly",
+            distance: queued.dolly,
           });
+        }
+
+        if (Math.abs(queued.roll) > EPSILON) {
+          applyControl({
+            type: "roll",
+            deltaRoll: queued.roll * config.rollSensitivity * delta,
+          });
+        }
+
+        if (queued.teleport?.position) {
+          const offset = subVec3(
+            targetCamera.transform.target,
+            targetCamera.transform.position
+          );
+          const nextPosition = cloneVec3(queued.teleport.position, targetCamera.transform.position);
+          const nextTarget = queued.teleport.target
+            ? cloneVec3(queued.teleport.target, targetCamera.transform.target)
+            : addVec3(nextPosition, offset);
+          applyControl({
+            type: "set-look-at",
+            position: nextPosition,
+            target: nextTarget,
+            up: targetCamera.transform.up,
+          });
+        }
+
+        if (queued.recenter || keyboard.recenter || gamepadInput.recenter) {
+          setRigForMode();
         }
       }
 
-      const smoothTime = pointers.size > 0 || Math.abs(moveX) > EPSILON || Math.abs(moveY) > EPSILON
+      const smoothTime = pointers.size > 0 || Math.abs(moveState.x) > EPSILON || Math.abs(moveState.y) > EPSILON
         ? config.draggingSmoothTime
         : config.smoothTime;
       currentCamera = smoothCamera(currentCamera, targetCamera, settleAlpha(delta, smoothTime));
       currentCamera = applyFloor(currentCamera, terrainFloorProvider, config.terrainFloorOffset, viewMode);
+
+      if (recording.active) {
+        recording.frames.push({
+          deltaSeconds: delta,
+          viewMode,
+          camera: cloneCamera(currentCamera),
+          targetCamera: cloneCamera(targetCamera),
+          activeDevice,
+        });
+      }
+
       return controller.getFrame();
     },
 
@@ -537,6 +1420,7 @@ export function createCameraControls(options = {}) {
       const distance = distanceVec3(currentCamera.transform.position, currentCamera.transform.target);
       return {
         viewMode,
+        rigMode: viewMode,
         camera: cloneCamera(currentCamera),
         targetCamera: cloneCamera(targetCamera),
         activeGesture,
@@ -548,10 +1432,16 @@ export function createCameraControls(options = {}) {
           sprint: analogInput.sprint,
         },
         distance,
+        activeDevice,
+        activeSources: [...deviceStates.values()].map((value) => ({ ...value })),
+        comfortProfile,
+        diagnostics: controller.getDiagnostics(),
+        hapticEffects: hapticQueue.map((effect) => ({ ...effect })),
+        recordingActive: recording.active,
         resting: pointers.size === 0
           && keys.size === 0
-          && Math.abs(distanceVec3(currentCamera.transform.position, targetCamera.transform.position)) < 1e-3
-          && Math.abs(distanceVec3(currentCamera.transform.target, targetCamera.transform.target)) < 1e-3,
+          && shallowEqualVec3(currentCamera.transform.position, targetCamera.transform.position)
+          && shallowEqualVec3(currentCamera.transform.target, targetCamera.transform.target),
       };
     },
   };

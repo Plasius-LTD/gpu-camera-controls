@@ -8,10 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - **Added**
-  - (placeholder)
+  - Added multimodal control contracts for action frames, bindings, diagnostics,
+    haptic effects, and deterministic recording/replay.
+  - Added browser and XR subpath exports for DOM bindings, analog pads, XR hand
+    gesture recognition, and XR-frame bridging.
 
 - **Changed**
-  - (placeholder)
+  - Expanded the controller from a touch-focused input layer into the shared
+    browser/XR/gamepad/external camera interaction platform for Plasius
+    surfaces.
 
 - **Fixed**
   - (placeholder)
