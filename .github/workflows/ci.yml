@@ -142,15 +142,3 @@ jobs:
             echo "Coverage gate failed: ${PCT}% < 80%"
             exit 1
           }
-
-      - name: Install Codecov CLI
-        run: python3 -m pip install --upgrade codecov-cli
-
-      - name: Upload coverage to Codecov
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-        run: |
-          codecovcli --verbose upload-process --disable-search --fail-on-error \
-            -n "unittests-${GITHUB_RUN_ID}" \
-            -F unittests \
-            -f "$LCOV_FILE"
