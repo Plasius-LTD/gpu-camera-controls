@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed**
   - Clear browser action state on detach without retaining unobservable
     held-key suppression latches.
+  - Use the pinned Codecov action on self-hosted CI instead of requiring a
+    runner-global Python `pip` installation.
 
 - **Security**
   - (placeholder)
