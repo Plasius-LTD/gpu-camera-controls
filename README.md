@@ -27,6 +27,9 @@ npm install @plasius/gpu-camera-controls @plasius/gpu-camera
 - three-finger truck/pan alias,
 - normalized analog movement and look vectors,
 - keyboard, mouse, and standard gamepad fallback inputs,
+- versioned jump, crouch, and bounded vertical swim actions,
+- cancellable begin/commit/cancel view-mode transitions that preserve a world
+  position,
 - XR frame ingestion, hand-gesture recognition, and haptic effect queues,
 - browser and XR subpath adapters,
 - deterministic recording/replay and device diagnostics,
@@ -71,14 +74,75 @@ bindings.attach();
 function frame(deltaSeconds) {
   bindings.update();
   const cameraFrame = controls.update(deltaSeconds);
+  queueCharacterPhysicsInput(cameraFrame.actions);
   render(cameraFrame.camera);
 }
 ```
+
+Character collision, gravity, slopes, buoyancy, and swimming state belong to
+`@plasius/gpu-physics`. This package emits normalized intent only.
+
+## Embodied Actions
+
+Every returned frame contains `actions: CameraControlEmbodiedActionsV1`:
+
+```js
+const frame = controls.update(deltaSeconds);
+
+queueCharacterPhysicsInput({
+  jumpPressed: frame.actions.jump.pressed,
+  jumpHeld: frame.actions.jump.active,
+  crouch: frame.actions.crouch.active,
+  swimVertical: frame.actions.swim.vertical,
+});
+```
+
+Jump and crouch include `active`, `pressed`, and `released` values so a
+fixed-step physics loop can distinguish edges from held input. Swim vertical is
+always clamped to `[-1, 1]`; horizontal swim intent continues to use `move`.
+
+Keyboard defaults are Space for jump/swim-up and Control for
+crouch/swim-down. Browser action pads use `setJump()`, `setCrouch()`, and
+`setSwimVertical()`. Standard gamepad button 0 maps to jump/swim-up and button 1
+maps to crouch/swim-down. Existing configurable movement, look, sprint, and
+precision bindings remain supported.
+
+## View Transitions
+
+Use the explicit lifecycle when streaming or physics must be coordinated with a
+view change:
+
+```js
+const transition = controls.beginViewModeTransition({
+  id: "overview-to-player",
+  to: "first-person",
+  preserveWorldPosition: true,
+});
+
+try {
+  await prepareDetailedWorldView({ signal, transition });
+  controls.commitViewModeTransition(transition.id);
+} catch (error) {
+  controls.cancelViewModeTransition(transition.id, "streaming-aborted");
+  throw error;
+}
+```
+
+Beginning a transition cancels obsolete input by default. Held keyboard,
+gamepad, and XR controls must return to neutral before they can become active
+again. Pass `cancelObsoleteInputs: false` only when the caller has another
+bounded cancellation policy. The immediate `setViewMode()` API remains
+available for existing consumers.
 
 ## API
 
 - `createCameraControls(options)`
 - `controller.setViewMode(mode)`
+- `controller.beginViewModeTransition(request)`
+- `controller.commitViewModeTransition(id)`
+- `controller.cancelViewModeTransition(id, reason)`
+- `controller.getViewModeTransition()`
+- `controller.cancelInputSources(options)`
 - `controller.setCamera(camera)`
 - `controller.setTerrainFloorProvider(provider)`
 - `controller.handlePointerDown/Move/Up/Cancel(event)`
@@ -100,6 +164,7 @@ Subpath exports:
 - `@plasius/gpu-camera-controls/browser`
   - `createBrowserCameraControlsBindings(...)`
   - `createAnalogPadController(...)`
+  - embodied action setters and `cancelObsoleteInputs(...)`
   - DOM event normalizers
 - `@plasius/gpu-camera-controls/xr`
   - `createXrCameraControlsBridge(...)`

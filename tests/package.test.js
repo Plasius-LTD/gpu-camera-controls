@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  cameraControlEmbodiedActionsVersion,
   cameraControlActionKinds,
   cameraControlSourceFamilies,
   createCameraControls,
@@ -10,6 +11,8 @@ import {
 import {
   createAnalogPadController,
   createBrowserCameraControlsBindings,
+  normalizeKeyEvent,
+  normalizeWheelEvent,
 } from "../src/browser.js";
 import {
   createXrCameraControlsBridge,
@@ -29,6 +32,7 @@ function cameraAt(position = [0, 0, 10], target = [0, 0, 0]) {
 }
 
 test("exports multimodal view modes, actions, and source families", () => {
+  assert.equal(cameraControlEmbodiedActionsVersion, 1);
   assert.deepEqual(gpuCameraControlsViewModes, [
     "editor",
     "spectator",
@@ -48,7 +52,196 @@ test("exports multimodal view modes, actions, and source families", () => {
     "truck",
   ]);
   assert.ok(cameraControlActionKinds.includes("teleport"));
+  assert.ok(cameraControlActionKinds.includes("jump"));
+  assert.ok(cameraControlActionKinds.includes("crouch"));
+  assert.ok(cameraControlActionKinds.includes("swim"));
+  assert.ok(cameraControlActionKinds.includes("mode-transition"));
   assert.ok(cameraControlSourceFamilies.includes("xr-hand"));
+});
+
+test("normalizes edge-aware jump, crouch, and swim actions", () => {
+  const controls = createCameraControls({
+    viewMode: "first-person",
+    camera: cameraAt([0, 1.7, 0], [0, 1.7, -1]),
+    draggingSmoothTime: 0,
+  });
+
+  controls.handleKeyDown({ code: "Space" });
+  let frame = controls.update(1 / 60);
+  assert.equal(frame.actions.schemaVersion, 1);
+  assert.deepEqual(frame.actions.jump, {
+    active: true,
+    pressed: true,
+    released: false,
+  });
+  assert.deepEqual(frame.actions.crouch, {
+    active: false,
+    pressed: false,
+    released: false,
+  });
+  assert.equal(frame.actions.swim.vertical, 1);
+
+  frame = controls.update(1 / 60);
+  assert.equal(frame.actions.jump.active, true);
+  assert.equal(frame.actions.jump.pressed, false);
+
+  controls.handleKeyUp({ code: "Space" });
+  frame = controls.update(1 / 60);
+  assert.deepEqual(frame.actions.jump, {
+    active: false,
+    pressed: false,
+    released: true,
+  });
+  assert.equal(frame.actions.swim.vertical, 0);
+
+  controls.applyInputFrame({
+    crouch: true,
+    swim: { vertical: -4 },
+    source: {
+      id: "touch-actions",
+      family: "touch",
+      kind: "action-pad",
+    },
+  });
+  frame = controls.update(1 / 60);
+  assert.equal(frame.actions.crouch.active, true);
+  assert.equal(frame.actions.crouch.pressed, true);
+  assert.equal(frame.actions.swim.vertical, -1);
+
+  frame = controls.update(1 / 60);
+  assert.equal(frame.actions.crouch.active, false);
+  assert.equal(frame.actions.crouch.released, true);
+});
+
+test("begins, commits, and cancels explicit view-mode transitions", () => {
+  const controls = createCameraControls({
+    viewMode: "spectator",
+    camera: cameraAt([10, 6, 20], [10, 2, 10]),
+    draggingSmoothTime: 0,
+  });
+  const selectedWorldPosition = [...controls.getFrame().targetCamera.transform.target];
+
+  controls.handleKeyDown({ code: "KeyW" });
+  controls.setAnalogInput({
+    move: { x: 1, y: 1 },
+    jump: true,
+    swimVertical: 1,
+  });
+  const transition = controls.beginViewModeTransition({
+    id: "overview-to-first-person",
+    to: "first-person",
+    preserveWorldPosition: true,
+  });
+
+  assert.equal(transition.phase, "began");
+  assert.equal(transition.cancelledInputEpoch, 1);
+  let frame = controls.update(1 / 10);
+  assert.equal(frame.viewMode, "spectator");
+  assert.equal(frame.actions.modeTransition.phase, "began");
+  assert.equal(frame.actions.jump.active, false);
+  assert.deepEqual(frame.targetCamera.transform.position, [10, 6, 20]);
+
+  controls.handleKeyDown({ code: "KeyW" });
+  frame = controls.update(1 / 10);
+  assert.deepEqual(frame.targetCamera.transform.position, [10, 6, 20]);
+
+  controls.handleKeyUp({ code: "KeyW" });
+  const committed = controls.commitViewModeTransition("overview-to-first-person");
+  assert.equal(committed.phase, "committed");
+  frame = controls.update(0);
+  assert.equal(frame.viewMode, "first-person");
+  assert.equal(frame.actions.modeTransition.phase, "committed");
+  assert.deepEqual(frame.targetCamera.transform.target, selectedWorldPosition);
+
+  const committedPosition = [...frame.targetCamera.transform.position];
+  controls.handleKeyDown({ code: "KeyW" });
+  frame = controls.update(1 / 10);
+  assert.notDeepEqual(frame.targetCamera.transform.position, committedPosition);
+  controls.handleKeyUp({ code: "KeyW" });
+
+  controls.beginViewModeTransition({
+    id: "first-person-to-isometric",
+    to: "isometric",
+  });
+  assert.throws(
+    () => controls.cancelViewModeTransition("wrong-transition"),
+    /does not match/
+  );
+  const cancelled = controls.cancelViewModeTransition(
+    "first-person-to-isometric",
+    "streaming-aborted"
+  );
+  assert.equal(cancelled.phase, "cancelled");
+  frame = controls.update(0);
+  assert.equal(frame.viewMode, "first-person");
+  assert.equal(frame.actions.modeTransition.phase, "cancelled");
+  assert.equal(frame.actions.modeTransition.reason, "streaming-aborted");
+});
+
+test("suppresses cancelled gamepad input until the device returns to neutral", () => {
+  const controls = createCameraControls({
+    viewMode: "first-person",
+    camera: cameraAt([0, 1.7, 0], [0, 1.7, -1]),
+    draggingSmoothTime: 0,
+  });
+  const pressedButtons = new Array(11)
+    .fill(null)
+    .map((_, index) => ({
+      pressed: index === 0,
+      touched: index === 0,
+      value: index === 0 ? 1 : 0,
+    }));
+
+  controls.ingestGamepads([
+    {
+      id: "Standard Pad",
+      connected: true,
+      mapping: "standard",
+      axes: [0, 0, 0, 0],
+      buttons: pressedButtons,
+    },
+  ]);
+  let frame = controls.update(1 / 60);
+  assert.equal(frame.actions.jump.pressed, true);
+  assert.equal(frame.actions.swim.vertical, 1);
+
+  controls.cancelInputSources({ reason: "mode-transition" });
+  controls.ingestGamepads([
+    {
+      id: "Standard Pad",
+      connected: true,
+      mapping: "standard",
+      axes: [0, 0, 0, 0],
+      buttons: pressedButtons,
+    },
+  ]);
+  frame = controls.update(1 / 60);
+  assert.equal(frame.actions.jump.active, false);
+  assert.equal(frame.actions.jump.released, true);
+
+  controls.ingestGamepads([
+    {
+      id: "Standard Pad",
+      connected: true,
+      mapping: "standard",
+      axes: [0, 0, 0, 0],
+      buttons: new Array(11)
+        .fill(null)
+        .map(() => ({ pressed: false, touched: false, value: 0 })),
+    },
+  ]);
+  controls.update(1 / 60);
+  controls.ingestGamepads([
+    {
+      id: "Standard Pad",
+      connected: true,
+      mapping: "standard",
+      axes: [0, 0, 0, 0],
+      buttons: pressedButtons,
+    },
+  ]);
+  frame = controls.update(1 / 60);
+  assert.equal(frame.actions.jump.pressed, true);
 });
 
 test("one-finger rotate still works for orbit-centric modes", () => {
@@ -221,14 +414,38 @@ test("analog pad controller normalizes touch-first thumb movement", () => {
   assert.ok(published);
   approxEqual(published.x, 0.707106, 1e-3);
   approxEqual(published.y, 0.707106, 1e-3);
+  assert.equal(pad.isActive(), true);
 
-  pad.end({
+  pad.move({
+    pointerId: 1,
+    clientX: 75,
+    clientY: 50,
+    currentTarget,
+  });
+  approxEqual(pad.getState().x, 0.5);
+  approxEqual(pad.getState().y, 0);
+  pad.setState({ x: -2, y: 0 });
+  assert.deepEqual(pad.getState(), { x: -1, y: 0 });
+
+  pad.cancel({
     pointerId: 1,
     clientX: 100,
     clientY: 0,
     currentTarget,
   });
   assert.deepEqual(pad.getState(), { x: 0, y: 0 });
+  assert.equal(pad.isActive(), false);
+});
+
+test("browser event normalizers retain portable key and wheel fields", () => {
+  assert.deepEqual(
+    normalizeKeyEvent({ code: "Space", repeat: true, timeStamp: 12 }),
+    { code: "Space", repeat: true, timeStamp: 12 }
+  );
+  assert.deepEqual(
+    normalizeWheelEvent({ deltaY: -120, timeStamp: 15 }),
+    { deltaY: -120, timeStamp: 15 }
+  );
 });
 
 test("browser bindings poll gamepads and forward analog state", () => {
@@ -301,6 +518,52 @@ test("browser bindings poll gamepads and forward analog state", () => {
   assert.equal(frame.activeDevice, "gamepad");
   assert.ok(frame.targetCamera.transform.position[2] < 0);
   bindings.detach();
+});
+
+test("browser bindings expose touch action state and cancel it on detach", () => {
+  const controls = createCameraControls({
+    viewMode: "first-person",
+    camera: cameraAt([0, 1.7, 0], [0, 1.7, -1]),
+    draggingSmoothTime: 0,
+  });
+  const bindings = createBrowserCameraControlsBindings({
+    controller: controls,
+    keyTarget: new EventTarget(),
+    pointerTarget: new EventTarget(),
+    gamepadProvider: () => [],
+  });
+
+  bindings
+    .attach()
+    .setAltitude(0.25)
+    .setJump(true)
+    .setCrouch(true)
+    .setSwimVertical(-0.6);
+  let frame = controls.update(1 / 60);
+  assert.equal(frame.actions.jump.active, true);
+  assert.equal(frame.actions.crouch.active, true);
+  assert.equal(frame.actions.swim.vertical, -0.6);
+  assert.equal(bindings.getDiagnostics().attached, true);
+
+  controls.handleKeyDown({ code: "KeyW" });
+  bindings.cancelObsoleteInputs("test-cancel");
+  assert.equal(controls.getDiagnostics().lastInputCancellation.reason, "test-cancel");
+  bindings.detach();
+  controls.handleKeyDown({ code: "KeyW" });
+  frame = controls.update(1 / 60);
+  assert.equal(frame.actions.jump.active, false);
+  assert.equal(frame.actions.jump.released, true);
+  assert.equal(frame.actions.crouch.released, true);
+  assert.ok(frame.targetCamera.transform.position[2] < 0);
+  assert.deepEqual(bindings.getAnalogInput(), {
+    move: { x: 0, y: 0 },
+    look: { x: 0, y: 0 },
+    altitude: 0,
+    sprint: false,
+    jump: false,
+    crouch: false,
+    swimVertical: 0,
+  });
 });
 
 test("xr hand gesture recognition and bridge translate pinches into input", () => {

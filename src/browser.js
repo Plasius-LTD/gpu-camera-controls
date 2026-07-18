@@ -134,6 +134,9 @@ export function createBrowserCameraControlsBindings(options = {}) {
     look: { x: 0, y: 0 },
     altitude: 0,
     sprint: false,
+    jump: false,
+    crouch: false,
+    swimVertical: 0,
   };
   let lastGamepadIds = [];
 
@@ -209,6 +212,19 @@ export function createBrowserCameraControlsBindings(options = {}) {
     controller.handleWheel(normalizeWheelEvent(event));
   };
 
+  const resetAnalogInput = () => {
+    analogInput = {
+      move: { x: 0, y: 0 },
+      look: { x: 0, y: 0 },
+      altitude: 0,
+      sprint: false,
+      jump: false,
+      crouch: false,
+      swimVertical: 0,
+    };
+    applyAnalogInput();
+  };
+
   return {
     attach() {
       if (attached) {
@@ -247,6 +263,12 @@ export function createBrowserCameraControlsBindings(options = {}) {
       if (wheelTarget?.removeEventListener) {
         wheelTarget.removeEventListener("wheel", onWheel);
       }
+      resetAnalogInput();
+      controller.cancelInputSources({
+        reason: "browser-detach",
+        suppressHeldInputs: false,
+      });
+      lastGamepadIds = [];
       attached = false;
       return this;
     },
@@ -283,12 +305,45 @@ export function createBrowserCameraControlsBindings(options = {}) {
       applyAnalogInput();
       return this;
     },
+    setJump(value) {
+      analogInput = {
+        ...analogInput,
+        jump: value === true,
+      };
+      applyAnalogInput();
+      return this;
+    },
+    setCrouch(value) {
+      analogInput = {
+        ...analogInput,
+        crouch: value === true,
+      };
+      applyAnalogInput();
+      return this;
+    },
+    setSwimVertical(value) {
+      analogInput = {
+        ...analogInput,
+        swimVertical: clamp(finiteNumber(value, 0), -1, 1),
+      };
+      applyAnalogInput();
+      return this;
+    },
+    cancelObsoleteInputs(reason = "browser-cancel") {
+      resetAnalogInput();
+      controller.cancelInputSources({ reason });
+      lastGamepadIds = [];
+      return this;
+    },
     getAnalogInput() {
       return {
         move: { ...analogInput.move },
         look: { ...analogInput.look },
         altitude: analogInput.altitude,
         sprint: analogInput.sprint,
+        jump: analogInput.jump,
+        crouch: analogInput.crouch,
+        swimVertical: analogInput.swimVertical,
       };
     },
     getDiagnostics() {
