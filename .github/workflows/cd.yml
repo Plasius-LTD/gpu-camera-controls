@@ -128,9 +128,9 @@ jobs:
         id: codecov
         if: steps.release.outputs.should_finalize_release == 'true' && steps.codecov_coverage.outputs.available == 'true'
         continue-on-error: true
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+          use_oidc: true
           files: ${{ steps.codecov_coverage.outputs.files }}
           flags: unittests
           fail_ci_if_error: false
