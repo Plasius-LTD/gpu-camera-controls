@@ -86,14 +86,12 @@ jobs:
             exit 1
           }
 
-      - name: Install Codecov CLI
-        run: python3 -m pip install --upgrade codecov-cli
-
       - name: Upload coverage to Codecov
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-        run: |
-          codecovcli --verbose upload-process --disable-search --fail-on-error \
-            -n "unittests-${GITHUB_RUN_ID}" \
-            -F unittests \
-            -f "$LCOV_FILE"
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ${{ env.LCOV_FILE }}
+          flags: unittests
+          name: unittests-${{ github.run_id }}
+          fail_ci_if_error: true
+          verbose: true
