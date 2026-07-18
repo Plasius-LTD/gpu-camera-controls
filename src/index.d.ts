@@ -32,7 +32,11 @@ export type CameraControlActionKind =
   | "focus"
   | "recenter"
   | "sprint"
-  | "precision";
+  | "precision"
+  | "jump"
+  | "crouch"
+  | "swim"
+  | "mode-transition";
 
 export type CameraControlSourceFamily =
   | "touch"
@@ -75,6 +79,52 @@ export interface GpuCameraControlsAnalogInput {
   look?: GpuCameraControlsVector2;
   altitude?: number;
   sprint?: boolean;
+  jump?: boolean;
+  crouch?: boolean;
+  swimVertical?: number;
+}
+
+export interface CameraControlButtonActionV1 {
+  active: boolean;
+  pressed: boolean;
+  released: boolean;
+}
+
+export interface CameraControlInputCancellationV1 {
+  schemaVersion: 1;
+  epoch: number;
+  reason: string;
+}
+
+export interface CameraControlModeTransitionRequestV1 {
+  id?: string;
+  to: GpuCameraControlsViewMode | string;
+  preserveWorldPosition?: boolean;
+  worldPosition?: Vec3 | null;
+  cancelObsoleteInputs?: boolean;
+  reason?: string | null;
+}
+
+export interface CameraControlModeTransitionV1 {
+  schemaVersion: 1;
+  id: string;
+  from: GpuCameraControlsViewMode;
+  to: GpuCameraControlsViewMode;
+  phase: "began" | "committed" | "cancelled";
+  preserveWorldPosition: boolean;
+  worldPosition: Vec3 | null;
+  cancelledInputEpoch: number | null;
+  reason: string | null;
+}
+
+export interface CameraControlEmbodiedActionsV1 {
+  schemaVersion: 1;
+  jump: CameraControlButtonActionV1;
+  crouch: CameraControlButtonActionV1;
+  swim: {
+    vertical: number;
+  };
+  modeTransition: CameraControlModeTransitionV1 | null;
 }
 
 export interface CameraControlSourceDescriptor {
@@ -105,6 +155,11 @@ export interface CameraControlInputFrame {
   precision?: boolean;
   focus?: boolean;
   recenter?: boolean;
+  jump?: boolean;
+  crouch?: boolean;
+  swim?: number | {
+    vertical?: number;
+  };
   teleport?: {
     position?: Vec3 | null;
     target?: Vec3 | null;
@@ -140,6 +195,9 @@ export interface CameraControlDiagnostics {
   recordingActive: boolean;
   xrMode: string | null;
   hasViewerPose: boolean;
+  inputEpoch: number;
+  lastInputCancellation: CameraControlInputCancellationV1 | null;
+  modeTransition: CameraControlModeTransitionV1 | null;
   context: Record<string, unknown>;
 }
 
@@ -208,6 +266,7 @@ export interface GpuCameraControlsFrame {
     move: Required<GpuCameraControlsVector2>;
     look: Required<GpuCameraControlsVector2>;
   };
+  actions: CameraControlEmbodiedActionsV1;
   distance: number;
   activeDevice: string;
   activeSources: CameraControlDeviceState[];
@@ -220,6 +279,19 @@ export interface GpuCameraControlsFrame {
 
 export interface GpuCameraControls {
   setViewMode(viewMode: GpuCameraControlsViewMode | string): GpuCameraControls;
+  beginViewModeTransition(
+    request: CameraControlModeTransitionRequestV1
+  ): CameraControlModeTransitionV1;
+  commitViewModeTransition(id?: string): CameraControlModeTransitionV1;
+  cancelViewModeTransition(
+    id?: string,
+    reason?: string
+  ): CameraControlModeTransitionV1;
+  getViewModeTransition(): CameraControlModeTransitionV1 | null;
+  cancelInputSources(options?: {
+    reason?: string;
+    suppressHeldInputs?: boolean;
+  }): GpuCameraControls;
   setCamera(camera: CameraDefinition): GpuCameraControls;
   setTerrainFloorProvider(
     provider: GpuCameraControlsTerrainFloorProvider | null | undefined
@@ -279,5 +351,6 @@ export const gpuCameraControlsTouchActions: readonly [
 
 export const cameraControlActionKinds: readonly CameraControlActionKind[];
 export const cameraControlSourceFamilies: readonly CameraControlSourceFamily[];
+export const cameraControlEmbodiedActionsVersion: 1;
 
 export type { CameraDefinition, CameraState, CameraViewMode, CameraComfortProfile, CameraCollisionProvider, CameraLocomotionState, CameraPose, Vec3 };

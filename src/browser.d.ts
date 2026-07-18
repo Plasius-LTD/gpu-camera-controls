@@ -34,6 +34,10 @@ export interface BrowserCameraControlsBindings {
   setAnalogState(kind: "move" | "look", state: GpuCameraControlsVector2): BrowserCameraControlsBindings;
   setAltitude(value: number): BrowserCameraControlsBindings;
   setSprint(value: boolean): BrowserCameraControlsBindings;
+  setJump(value: boolean): BrowserCameraControlsBindings;
+  setCrouch(value: boolean): BrowserCameraControlsBindings;
+  setSwimVertical(value: number): BrowserCameraControlsBindings;
+  cancelObsoleteInputs(reason?: string): BrowserCameraControlsBindings;
   getAnalogInput(): Required<GpuCameraControlsAnalogInput> & {
     move: Required<GpuCameraControlsVector2>;
     look: Required<GpuCameraControlsVector2>;

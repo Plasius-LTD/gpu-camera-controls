@@ -26,6 +26,8 @@ const DEFAULT_CAMERA = Object.freeze({
 
 export const gpuCameraControlsViewModes = cameraViewModes;
 
+export const cameraControlEmbodiedActionsVersion = 1;
+
 export const gpuCameraControlsTouchActions = Object.freeze([
   "none",
   "rotate",
@@ -49,6 +51,10 @@ export const cameraControlActionKinds = Object.freeze([
   "recenter",
   "sprint",
   "precision",
+  "jump",
+  "crouch",
+  "swim",
+  "mode-transition",
 ]);
 
 export const cameraControlSourceFamilies = Object.freeze([
@@ -73,6 +79,10 @@ const DEFAULT_BINDINGS = Object.freeze({
     sprint: ["ShiftLeft", "ShiftRight"],
     recenter: ["KeyR"],
     precision: ["AltLeft", "AltRight"],
+    jump: ["Space"],
+    crouch: ["ControlLeft", "ControlRight"],
+    swimUp: ["Space"],
+    swimDown: ["ControlLeft", "ControlRight"],
   }),
   gamepad: Object.freeze({
     moveAxes: [0, 1],
@@ -82,12 +92,20 @@ const DEFAULT_BINDINGS = Object.freeze({
     precisionButtons: [4],
     focusButtons: [2],
     recenterButtons: [8],
+    jumpButtons: [0],
+    crouchButtons: [1],
+    swimUpButtons: [0],
+    swimDownButtons: [1],
   }),
   xr: Object.freeze({
     moveAxes: [2, 3],
     lookAxes: [0, 1],
     snapTurnAxis: 2,
     dominantHand: "right",
+    jumpButtons: [0],
+    crouchButtons: [1],
+    swimUpButtons: [0],
+    swimDownButtons: [1],
   }),
 });
 
@@ -187,6 +205,14 @@ function lerpVec3(left, right, alpha) {
 function normalizeViewMode(value) {
   const viewMode = String(value ?? "").trim();
   return cameraViewModes.includes(viewMode) ? viewMode : DEFAULT_OPTIONS.viewMode;
+}
+
+function requireViewMode(value) {
+  const viewMode = String(value ?? "").trim();
+  if (!cameraViewModes.includes(viewMode)) {
+    throw new RangeError(`Unsupported camera view mode "${viewMode}".`);
+  }
+  return viewMode;
 }
 
 function normalizeCamera(camera = DEFAULT_CAMERA) {
@@ -342,6 +368,9 @@ function normalizeBindings(bindings = {}) {
 }
 
 function normalizeActionFrame(input = {}) {
+  const swimVertical = typeof input.swim === "number"
+    ? input.swim
+    : input.swim?.vertical;
   return {
     move: normalizeAnalogVector(input.move),
     look: normalizeAnalogVector(input.look),
@@ -356,6 +385,11 @@ function normalizeActionFrame(input = {}) {
     precision: input.precision === true,
     focus: input.focus === true,
     recenter: input.recenter === true,
+    jump: input.jump === true,
+    crouch: input.crouch === true,
+    swim: {
+      vertical: clamp(finiteNumber(swimVertical, 0), -1, 1),
+    },
     teleport:
       input.teleport && typeof input.teleport === "object"
         ? {
@@ -421,6 +455,15 @@ function mergeActionFrames(base, input) {
     precision: next.precision || normalized.precision,
     focus: next.focus || normalized.focus,
     recenter: next.recenter || normalized.recenter,
+    jump: next.jump || normalized.jump,
+    crouch: next.crouch || normalized.crouch,
+    swim: {
+      vertical: clamp(
+        next.swim.vertical + normalized.swim.vertical,
+        -1,
+        1
+      ),
+    },
     teleport: normalized.teleport ?? next.teleport,
     source: normalized.source ?? next.source,
     viewerPose: normalized.viewerPose ?? next.viewerPose,
@@ -559,6 +602,42 @@ function shallowEqualVec3(left, right, epsilon = 1e-3) {
   );
 }
 
+function normalizeBindingValues(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  return value == null ? [] : [value];
+}
+
+function createButtonAction(active, previousActive) {
+  return {
+    active,
+    pressed: active && !previousActive,
+    released: !active && previousActive,
+  };
+}
+
+function cloneModeTransition(transition) {
+  if (!transition) {
+    return null;
+  }
+  return {
+    ...transition,
+    worldPosition: transition.worldPosition
+      ? cloneVec3(transition.worldPosition)
+      : null,
+  };
+}
+
+function translateCameraTarget(camera, worldPosition) {
+  const next = cloneCamera(camera);
+  const target = cloneVec3(worldPosition, next.transform.target);
+  const delta = subVec3(target, next.transform.target);
+  next.transform.position = addVec3(next.transform.position, delta);
+  next.transform.target = target;
+  return next;
+}
+
 export function createCameraControls(options = {}) {
   const config = {
     ...DEFAULT_OPTIONS,
@@ -591,15 +670,37 @@ export function createCameraControls(options = {}) {
   let activeDevice = "none";
   let diagnosticsContext = {};
   let lastRecording = null;
+  let inputEpoch = 0;
+  let lastInputCancellation = null;
+  let gamepadSuppressedUntilNeutral = false;
+  let xrSuppressedUntilNeutral = false;
+  let transitionSequence = 0;
+  let activeModeTransition = null;
+  let queuedModeTransitionEvent = null;
+  let previousEmbodiedState = {
+    jump: false,
+    crouch: false,
+  };
+  let lastEmbodiedActions = {
+    schemaVersion: cameraControlEmbodiedActionsVersion,
+    jump: createButtonAction(false, false),
+    crouch: createButtonAction(false, false),
+    swim: { vertical: 0 },
+    modeTransition: null,
+  };
 
   const pointers = new Map();
   const keys = new Set();
+  const blockedKeys = new Set();
   const deviceStates = new Map();
   let analogInput = {
     move: { x: 0, y: 0 },
     look: { x: 0, y: 0 },
     altitude: 0,
     sprint: false,
+    jump: false,
+    crouch: false,
+    swimVertical: 0,
   };
   let hapticQueue = [];
   let recording = {
@@ -700,17 +801,103 @@ export function createCameraControls(options = {}) {
     });
   };
 
+  const hasBoundKey = (bindingName) => normalizeBindingValues(
+    bindings.keyboard[bindingName]
+  ).some((code) => keys.has(String(code)));
+
+  const isButtonPressed = (snapshot, index) => {
+    const button = snapshot?.buttons?.[Number(index)];
+    return button?.pressed === true || finiteNumber(button?.value, 0) > 0.5;
+  };
+
+  const hasBoundButton = (snapshot, values) => normalizeBindingValues(values)
+    .some((index) => isButtonPressed(snapshot, index));
+
+  const isGamepadNeutral = (snapshot) => {
+    if (!snapshot) {
+      return true;
+    }
+    const axesNeutral = snapshot.axes.every(
+      (axis) => Math.abs(finiteNumber(axis, 0)) <= config.analogDeadzone
+    );
+    const buttonsNeutral = snapshot.buttons.every(
+      (button) => button?.pressed !== true && finiteNumber(button?.value, 0) <= 0.1
+    );
+    return axesNeutral && buttonsNeutral;
+  };
+
+  const isXrNeutral = () => xrState.sources.every((source) => {
+    const gamepad = source?.gamepad;
+    const axes = Array.isArray(gamepad?.axes) ? gamepad.axes : [];
+    const buttons = Array.isArray(gamepad?.buttons) ? gamepad.buttons : [];
+    return source?.selectPressed !== true
+      && source?.squeezePressed !== true
+      && axes.every((axis) => Math.abs(finiteNumber(axis, 0)) <= config.analogDeadzone)
+      && buttons.every(
+        (button) => button?.pressed !== true && finiteNumber(button?.value, 0) <= 0.1
+      );
+  });
+
+  const performInputCancellation = (request = {}) => {
+    const suppressHeldInputs = request.suppressHeldInputs !== false;
+    if (suppressHeldInputs) {
+      for (const code of keys) {
+        blockedKeys.add(code);
+      }
+    } else {
+      blockedKeys.clear();
+    }
+    keys.clear();
+    pointers.clear();
+    setGestureState();
+    analogInput = {
+      move: { x: 0, y: 0 },
+      look: { x: 0, y: 0 },
+      altitude: 0,
+      sprint: false,
+      jump: false,
+      crouch: false,
+      swimVertical: 0,
+    };
+    queuedFrameInput = createEmptyActionFrame();
+    hapticQueue = [];
+    playback = null;
+    gamepadTurnLatch = 0;
+    xrTurnLatch = 0;
+    gamepadSuppressedUntilNeutral = suppressHeldInputs && gamepads.some(
+      (gamepad) => !isGamepadNeutral(gamepad)
+    );
+    xrSuppressedUntilNeutral = suppressHeldInputs && !isXrNeutral();
+    deviceStates.clear();
+    activeDevice = "none";
+    inputEpoch += 1;
+    lastInputCancellation = {
+      schemaVersion: 1,
+      epoch: inputEpoch,
+      reason: String(request.reason ?? "cancelled"),
+    };
+    return { ...lastInputCancellation };
+  };
+
   const buildKeyboardState = () => {
-    const moveForward = (keys.has("KeyW") ? 1 : 0) - (keys.has("KeyS") ? 1 : 0);
-    const moveRight = (keys.has("KeyD") ? 1 : 0) - (keys.has("KeyA") ? 1 : 0);
-    const elevate = (keys.has("Space") ? 1 : 0)
-      - (keys.has("ControlLeft") || keys.has("ControlRight") ? 1 : 0);
+    const moveForward = (hasBoundKey("moveForward") ? 1 : 0)
+      - (hasBoundKey("moveBackward") ? 1 : 0);
+    const moveRight = (hasBoundKey("moveRight") ? 1 : 0)
+      - (hasBoundKey("moveLeft") ? 1 : 0);
+    const elevate = (hasBoundKey("elevateUp") ? 1 : 0)
+      - (hasBoundKey("elevateDown") ? 1 : 0);
     return {
       move: { x: moveRight, y: moveForward },
       elevate,
-      sprint: keys.has("ShiftLeft") || keys.has("ShiftRight"),
-      precision: keys.has("AltLeft") || keys.has("AltRight"),
-      recenter: keys.has("KeyR"),
+      sprint: hasBoundKey("sprint"),
+      precision: hasBoundKey("precision"),
+      recenter: hasBoundKey("recenter"),
+      jump: hasBoundKey("jump"),
+      crouch: hasBoundKey("crouch"),
+      swim: {
+        vertical: (hasBoundKey("swimUp") ? 1 : 0)
+          - (hasBoundKey("swimDown") ? 1 : 0),
+      },
     };
   };
 
@@ -721,12 +908,30 @@ export function createCameraControls(options = {}) {
       return createEmptyActionFrame();
     }
 
-    const leftX = finiteNumber(primary.axes[0], 0);
-    const leftY = -finiteNumber(primary.axes[1], 0);
-    const rightX = finiteNumber(primary.axes[2], 0);
-    const rightY = -finiteNumber(primary.axes[3], 0);
-    const leftTrigger = finiteNumber(primary.buttons[6]?.value, 0);
-    const rightTrigger = finiteNumber(primary.buttons[7]?.value, 0);
+    if (gamepadSuppressedUntilNeutral) {
+      if (!isGamepadNeutral(primary)) {
+        return createEmptyActionFrame();
+      }
+      gamepadSuppressedUntilNeutral = false;
+    }
+
+    const moveAxes = normalizeBindingValues(bindings.gamepad.moveAxes);
+    const lookAxes = normalizeBindingValues(bindings.gamepad.lookAxes);
+    const altitudeButtons = normalizeBindingValues(
+      bindings.gamepad.altitudeButtons
+    );
+    const leftX = finiteNumber(primary.axes[moveAxes[0] ?? 0], 0);
+    const leftY = -finiteNumber(primary.axes[moveAxes[1] ?? 1], 0);
+    const rightX = finiteNumber(primary.axes[lookAxes[0] ?? 2], 0);
+    const rightY = -finiteNumber(primary.axes[lookAxes[1] ?? 3], 0);
+    const leftTrigger = finiteNumber(
+      primary.buttons[altitudeButtons[0] ?? 6]?.value,
+      0
+    );
+    const rightTrigger = finiteNumber(
+      primary.buttons[altitudeButtons[1] ?? 7]?.value,
+      0
+    );
     let snapTurn = 0;
     if (Math.abs(rightX) > 0.78 && gamepadTurnLatch === 0) {
       snapTurn = rightX > 0 ? 1 : -1;
@@ -748,10 +953,17 @@ export function createCameraControls(options = {}) {
       smoothTurn: 0,
       snapTurn,
       elevate: rightTrigger - leftTrigger,
-      sprint: primary.buttons[10]?.pressed === true || primary.buttons[0]?.pressed === true,
-      precision: primary.buttons[4]?.pressed === true,
-      focus: primary.buttons[2]?.pressed === true,
-      recenter: primary.buttons[8]?.pressed === true,
+      sprint: hasBoundButton(primary, bindings.gamepad.sprintButtons),
+      precision: hasBoundButton(primary, bindings.gamepad.precisionButtons),
+      focus: hasBoundButton(primary, bindings.gamepad.focusButtons),
+      recenter: hasBoundButton(primary, bindings.gamepad.recenterButtons),
+      jump: hasBoundButton(primary, bindings.gamepad.jumpButtons),
+      crouch: hasBoundButton(primary, bindings.gamepad.crouchButtons),
+      swim: {
+        vertical:
+          (hasBoundButton(primary, bindings.gamepad.swimUpButtons) ? 1 : 0)
+          - (hasBoundButton(primary, bindings.gamepad.swimDownButtons) ? 1 : 0),
+      },
       source: {
         id: primary.id,
         family: "gamepad",
@@ -765,6 +977,13 @@ export function createCameraControls(options = {}) {
     if (!xrState.viewer) {
       xrTurnLatch = 0;
       return createEmptyActionFrame();
+    }
+
+    if (xrSuppressedUntilNeutral) {
+      if (!isXrNeutral()) {
+        return createEmptyActionFrame();
+      }
+      xrSuppressedUntilNeutral = false;
     }
 
     const controllers = xrState.sources.filter((source) => source.family === "xr-controller");
@@ -792,18 +1011,31 @@ export function createCameraControls(options = {}) {
       });
     }
 
+    const moveAxes = normalizeBindingValues(bindings.xr.moveAxes);
+    const lookAxes = normalizeBindingValues(bindings.xr.lookAxes);
+    const readXrButton = (source, values) => hasBoundButton(
+      source?.gamepad,
+      values
+    );
     return normalizeActionFrame({
       move: {
-        x: finiteNumber(moveSource?.gamepad?.axes?.[0], 0),
-        y: -finiteNumber(moveSource?.gamepad?.axes?.[1], 0),
+        x: finiteNumber(moveSource?.gamepad?.axes?.[moveAxes[0] ?? 2], 0),
+        y: -finiteNumber(moveSource?.gamepad?.axes?.[moveAxes[1] ?? 3], 0),
       },
       look: {
-        x: finiteNumber(lookSource?.gamepad?.axes?.[0], 0),
-        y: -finiteNumber(lookSource?.gamepad?.axes?.[1], 0),
+        x: finiteNumber(lookSource?.gamepad?.axes?.[lookAxes[0] ?? 0], 0),
+        y: -finiteNumber(lookSource?.gamepad?.axes?.[lookAxes[1] ?? 1], 0),
       },
       snapTurn,
       sprint: moveSource?.squeezePressed === true || lookSource?.squeezePressed === true,
       focus: lookSource?.selectPressed === true,
+      jump: readXrButton(moveSource, bindings.xr.jumpButtons),
+      crouch: readXrButton(moveSource, bindings.xr.crouchButtons),
+      swim: {
+        vertical:
+          (readXrButton(moveSource, bindings.xr.swimUpButtons) ? 1 : 0)
+          - (readXrButton(moveSource, bindings.xr.swimDownButtons) ? 1 : 0),
+      },
       source: lookSource
         ? {
             id: lookSource.id,
@@ -922,8 +1154,114 @@ export function createCameraControls(options = {}) {
   const controller = {
     setViewMode(nextViewMode) {
       viewMode = normalizeViewMode(nextViewMode);
+      activeModeTransition = null;
+      queuedModeTransitionEvent = null;
       setGestureState();
       setRigForMode();
+      return controller;
+    },
+
+    beginViewModeTransition(request = {}) {
+      if (activeModeTransition) {
+        throw new Error(
+          `View-mode transition "${activeModeTransition.id}" is already active.`
+        );
+      }
+      const to = requireViewMode(request.to);
+      const id = String(
+        request.id ?? `mode-transition-${transitionSequence + 1}`
+      ).trim();
+      if (!id) {
+        throw new TypeError("A view-mode transition id cannot be empty.");
+      }
+      transitionSequence += 1;
+      const cancellation = request.cancelObsoleteInputs === false
+        ? null
+        : performInputCancellation({
+            reason: request.reason ?? "mode-transition",
+          });
+      activeModeTransition = {
+        schemaVersion: 1,
+        id,
+        from: viewMode,
+        to,
+        phase: "began",
+        preserveWorldPosition: request.preserveWorldPosition !== false,
+        worldPosition: request.preserveWorldPosition === false
+          ? null
+          : cloneVec3(
+              request.worldPosition,
+              targetCamera.transform.target
+            ),
+        cancelledInputEpoch: cancellation?.epoch ?? null,
+        reason: request.reason == null ? null : String(request.reason),
+      };
+      queuedModeTransitionEvent = cloneModeTransition(activeModeTransition);
+      return cloneModeTransition(activeModeTransition);
+    },
+
+    commitViewModeTransition(id = activeModeTransition?.id) {
+      if (!activeModeTransition) {
+        throw new Error("No view-mode transition is active.");
+      }
+      if (String(id ?? "") !== activeModeTransition.id) {
+        throw new Error(
+          `View-mode transition "${String(id ?? "")}" does not match active transition "${activeModeTransition.id}".`
+        );
+      }
+      const committed = {
+        ...activeModeTransition,
+        phase: "committed",
+      };
+      viewMode = activeModeTransition.to;
+      setGestureState();
+      setRigForMode();
+      if (
+        activeModeTransition.preserveWorldPosition
+        && activeModeTransition.worldPosition
+      ) {
+        targetCamera = translateCameraTarget(
+          targetCamera,
+          activeModeTransition.worldPosition
+        );
+        currentCamera = translateCameraTarget(
+          currentCamera,
+          activeModeTransition.worldPosition
+        );
+      }
+      activeModeTransition = null;
+      queuedModeTransitionEvent = cloneModeTransition(committed);
+      return cloneModeTransition(committed);
+    },
+
+    cancelViewModeTransition(
+      id = activeModeTransition?.id,
+      reason = "cancelled"
+    ) {
+      if (!activeModeTransition) {
+        throw new Error("No view-mode transition is active.");
+      }
+      if (String(id ?? "") !== activeModeTransition.id) {
+        throw new Error(
+          `View-mode transition "${String(id ?? "")}" does not match active transition "${activeModeTransition.id}".`
+        );
+      }
+      const cancelled = {
+        ...activeModeTransition,
+        phase: "cancelled",
+        reason: String(reason ?? "cancelled"),
+      };
+      activeModeTransition = null;
+      queuedModeTransitionEvent = cloneModeTransition(cancelled);
+      return cloneModeTransition(cancelled);
+    },
+
+    getViewModeTransition() {
+      return cloneModeTransition(activeModeTransition);
+    },
+
+    cancelInputSources(request = {}) {
+      performInputCancellation(request);
       return controller;
     },
 
@@ -1065,6 +1403,9 @@ export function createCameraControls(options = {}) {
 
     handleKeyDown(event) {
       const code = String(event.code ?? "");
+      if (blockedKeys.has(code)) {
+        return controller;
+      }
       if (code) {
         keys.add(code);
         updateActiveSource({
@@ -1079,7 +1420,10 @@ export function createCameraControls(options = {}) {
 
     handleKeyUp(event) {
       const code = String(event.code ?? "");
-      if (code) keys.delete(code);
+      if (code) {
+        keys.delete(code);
+        blockedKeys.delete(code);
+      }
       return controller;
     },
 
@@ -1089,6 +1433,9 @@ export function createCameraControls(options = {}) {
         look: normalizeAnalogVector(input.look),
         altitude: clamp(finiteNumber(input.altitude, 0), -1, 1),
         sprint: input.sprint === true,
+        jump: input.jump === true,
+        crouch: input.crouch === true,
+        swimVertical: clamp(finiteNumber(input.swimVertical, 0), -1, 1),
       };
       return controller;
     },
@@ -1198,6 +1545,11 @@ export function createCameraControls(options = {}) {
         recordingActive: recording.active,
         xrMode: xrState.mode,
         hasViewerPose: Boolean(xrState.viewer),
+        inputEpoch,
+        lastInputCancellation: lastInputCancellation
+          ? { ...lastInputCancellation }
+          : null,
+        modeTransition: cloneModeTransition(activeModeTransition),
         context: {
           ...diagnosticsContext,
         },
@@ -1217,6 +1569,8 @@ export function createCameraControls(options = {}) {
       const xrInput = deriveXrInput();
       const queued = queuedFrameInput;
       queuedFrameInput = createEmptyActionFrame();
+      const modeTransitionEvent = queuedModeTransitionEvent;
+      queuedModeTransitionEvent = null;
 
       const moveState = normalizeAnalogVector({
         x: clamp(
@@ -1260,6 +1614,38 @@ export function createCameraControls(options = {}) {
         || queued.precision;
       const speedMultiplier = (sprint ? config.sprintMultiplier : 1)
         * (precision ? config.precisionMultiplier : 1);
+      const jump = analogInput.jump
+        || keyboard.jump
+        || gamepadInput.jump
+        || xrInput.jump
+        || queued.jump;
+      const crouch = analogInput.crouch
+        || keyboard.crouch
+        || gamepadInput.crouch
+        || xrInput.crouch
+        || queued.crouch;
+      const swimVertical = clamp(
+        analogInput.swimVertical
+          + keyboard.swim.vertical
+          + gamepadInput.swim.vertical
+          + xrInput.swim.vertical
+          + queued.swim.vertical,
+        -1,
+        1
+      );
+      lastEmbodiedActions = {
+        schemaVersion: cameraControlEmbodiedActionsVersion,
+        jump: createButtonAction(jump, previousEmbodiedState.jump),
+        crouch: createButtonAction(crouch, previousEmbodiedState.crouch),
+        swim: {
+          vertical: swimVertical,
+        },
+        modeTransition: cloneModeTransition(modeTransitionEvent),
+      };
+      previousEmbodiedState = {
+        jump,
+        crouch,
+      };
 
       if (queued.teleport || gamepadInput.focus || xrInput.focus || queued.focus) {
         queueHapticEffect({
@@ -1430,6 +1816,18 @@ export function createCameraControls(options = {}) {
           look: { ...analogInput.look },
           altitude: analogInput.altitude,
           sprint: analogInput.sprint,
+          jump: analogInput.jump,
+          crouch: analogInput.crouch,
+          swimVertical: analogInput.swimVertical,
+        },
+        actions: {
+          schemaVersion: lastEmbodiedActions.schemaVersion,
+          jump: { ...lastEmbodiedActions.jump },
+          crouch: { ...lastEmbodiedActions.crouch },
+          swim: { ...lastEmbodiedActions.swim },
+          modeTransition: cloneModeTransition(
+            lastEmbodiedActions.modeTransition
+          ),
         },
         distance,
         activeDevice,
@@ -1440,6 +1838,9 @@ export function createCameraControls(options = {}) {
         recordingActive: recording.active,
         resting: pointers.size === 0
           && keys.size === 0
+          && !lastEmbodiedActions.jump.active
+          && !lastEmbodiedActions.crouch.active
+          && Math.abs(lastEmbodiedActions.swim.vertical) <= EPSILON
           && shallowEqualVec3(currentCamera.transform.position, targetCamera.transform.position)
           && shallowEqualVec3(currentCamera.transform.target, targetCamera.transform.target),
       };

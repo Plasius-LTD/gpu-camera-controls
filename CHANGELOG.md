@@ -8,13 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - **Added**
-  - (placeholder)
+  - Added `CameraControlEmbodiedActionsV1` with edge-aware jump/crouch,
+    normalized vertical swim intent, and runtime schema version `1`.
+  - Added explicit begin, commit, and cancel view-mode transition APIs with
+    selected-world-position preservation.
+  - Added browser action-pad setters for jump, crouch, and swim input.
 
 - **Changed**
-  - (placeholder)
+  - Cancel obsolete keyboard, pointer, analog, gamepad, XR, playback, and haptic
+    input when a coordinated view transition begins.
+  - Suppress held device input until it returns to neutral after cancellation.
+  - Route maintenance and release-preparation automation through self-hosted
+    Linux runners.
 
 - **Fixed**
-  - (placeholder)
+  - Clear browser action state on detach without retaining unobservable
+    held-key suppression latches.
 
 - **Security**
   - (placeholder)
