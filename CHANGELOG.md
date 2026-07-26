@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added browser action-pad setters for jump, crouch, and swim input.
 
 - **Changed**
+  - Updated the lockfile to the surviving `@plasius/gpu-shared` 1.0.14 line and the fixed esbuild resolution.
   - Cancel obsolete keyboard, pointer, analog, gamepad, XR, playback, and haptic
     input when a coordinated view transition begins.
   - Suppress held device input until it returns to neutral after cancellation.
@@ -28,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     requiring a runner-global Python `pip` installation or repository token.
 
 - **Security**
+  - Added fail-closed source and npm-package admission for the administrative contributor registry and pinned the CI/CD runtime to Node.js 24.18.0 LTS.
   - (placeholder)
 
 ## [0.1.1] - 2026-07-11
