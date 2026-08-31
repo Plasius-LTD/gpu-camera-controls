@@ -28,7 +28,14 @@ test("keeps same-repository pull-request CI on explicit trusted runners", () => 
   assert.match(ciWorkflow, /workflow_dispatch:/u);
   assert.doesNotMatch(ciWorkflow, /\n\s+cache:\s*["']?npm["']?/u);
   assert.equal(ciWorkflow.match(/package-manager-cache: false/gu)?.length, 2);
-  assert.match(ciWorkflow, /runs-on: \[self-hosted, Linux, X64\]/u);
+  assert.equal(
+    ciWorkflow.match(/runs-on:\n {6}group: Public CI - Quarantined/gu)?.length,
+    2,
+  );
+  assert.equal(
+    ciWorkflow.match(/labels: \[self-hosted, Linux, X64\]/gu)?.length,
+    2,
+  );
   assert.match(ciWorkflow, /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/u);
   assert.doesNotMatch(ciWorkflow, /pull_request_target/u);
   assert.doesNotMatch(ciWorkflow, /fromJSON\(vars\./u);
