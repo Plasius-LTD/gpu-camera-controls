@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Linux runners.
 
 - **Fixed**
+  - Disabled package-manager caching on self-hosted CI to prevent cache-save
+    cleanup stalls from blocking the validation queue.
   - Clear browser action state on detach without retaining unobservable
     held-key suppression latches.
   - Use the pinned Codecov action with GitHub OIDC on self-hosted CI instead of

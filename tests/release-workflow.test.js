@@ -26,6 +26,7 @@ test("uses exact-main hosted OIDC publication without write tokens", () => {
 test("keeps same-repository pull-request CI on explicit trusted runners", () => {
   assert.match(ciWorkflow, /pull_request:/u);
   assert.match(ciWorkflow, /workflow_dispatch:/u);
+  assert.doesNotMatch(ciWorkflow, /\n\s+cache:\s*["']?npm["']?/u);
   assert.match(ciWorkflow, /runs-on: \[self-hosted, Linux, X64\]/u);
   assert.match(ciWorkflow, /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/u);
   assert.doesNotMatch(ciWorkflow, /pull_request_target/u);
