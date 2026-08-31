@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added browser action-pad setters for jump, crouch, and swim input.
 
 - **Changed**
+  - Routed reviewed CI through the organisation's quarantined public runner group while retaining explicit platform labels.
   - Updated the lockfile to the surviving `@plasius/gpu-shared` 1.0.14 line and the fixed esbuild resolution.
   - Bound npm publication to the exact prepared `main` commit after successful push-triggered CI.
   - Enabled exact-head manual CI dispatch for reviewed release validation.
