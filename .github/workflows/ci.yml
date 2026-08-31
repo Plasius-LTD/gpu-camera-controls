@@ -24,6 +24,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version-file: '.nvmrc'
+          package-manager-cache: false
 
       - name: Install deps
         run: npm ci --no-fund --no-audit --legacy-peer-deps
@@ -116,6 +117,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
       - name: Verify public artifact integrity
         run: node ./scripts/verify-public-artifacts.cjs '--package-dir' '.'
   # END PLASIUS PUBLIC ARTIFACT INTEGRITY JOB
