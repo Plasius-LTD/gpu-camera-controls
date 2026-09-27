@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Refresh compatible npm dependencies and published Plasius dependency resolutions for the weekly security maintenance batch (2026-09-27).
+
 - **Added**
   - Added `CameraControlEmbodiedActionsV1` with edge-aware jump/crouch,
     normalized vertical swim intent, and runtime schema version `1`.
