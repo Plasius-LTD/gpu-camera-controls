@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Restore automatic schema-template npm publication and validate renewed trusted publishing with a sealed package inventory.
+
 - **Added**
   - Added `CameraControlEmbodiedActionsV1` with edge-aware jump/crouch,
     normalized vertical swim intent, and runtime schema version `1`.
@@ -37,7 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Pinned patched transitive npm dependencies to clear the current audit baseline.
   - Added fail-closed source and npm-package admission for the administrative contributor registry and pinned the CI/CD runtime to Node.js 24.18.0 LTS.
   - Removed the npm write-token path, added a fail-closed npm 11.5.1-or-newer OIDC guard, and denied fork PR code access to self-hosted CI.
-  - (placeholder)
 
 ## [0.1.1] - 2026-07-11
 
@@ -53,10 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     surfaces.
 
 - **Fixed**
-  - (placeholder)
 
 - **Security**
-  - (placeholder)
 
 ## [0.1.0] - 2026-07-10
 
@@ -68,13 +69,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     clamping support without depending on Three.js or `camera-controls`.
 
 - **Changed**
-  - (placeholder)
 
 - **Fixed**
-  - (placeholder)
 
 - **Security**
-  - (placeholder)
 
 
 [0.1.0]: https://github.com/Plasius-LTD/gpu-camera-controls/releases/tag/v0.1.0

@@ -1,30 +1,49 @@
 name: CI
 
 on:
-  pull_request:
-    branches: [main]
   push:
     branches: [main]
-  workflow_dispatch:
+  pull_request:
+    branches: [main]
 permissions:
   actions: read
   contents: read
-  id-token: write
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  trusted_head:
+    name: Trusted head admission
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Reject external fork execution
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "pull_request" ] && [ "${HEAD_REPOSITORY}" != "${BASE_REPOSITORY}" ]; then
+            echo "External fork pull requests cannot be merged until a maintainer moves the reviewed commit to a repository-owned branch." >&2
+            exit 1
+          fi
+
   build-test:
+    needs: trusted_head
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["self-hosted","Linux","X64"]') }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v4
         with:
           node-version-file: '.nvmrc'
-          package-manager-cache: false
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
+      - name: Verify private artifact policy
+        run: npm run privacy:check
+
+      - name: Test private artifact policy
+        run: npm run test:privacy
 
       - name: Install deps
         run: npm ci --no-fund --no-audit --legacy-peer-deps
@@ -40,6 +59,9 @@ jobs:
 
       - name: Build
         run: npm run build --if-present
+
+      - name: Verify public package contents
+        run: npm run pack:check
 
       - name: Test with coverage
         run: |
@@ -93,18 +115,18 @@ jobs:
 
       - name: Upload coverage to Codecov
         continue-on-error: true
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@v4
         with:
-          use_oidc: true
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: ${{ env.LCOV_FILE }}
           flags: unittests
-          name: unittests-${{ github.run_id }}
           fail_ci_if_error: false
-          verbose: true
+          slug: ${{ github.repository }}
 
   # BEGIN PLASIUS PUBLIC ARTIFACT INTEGRITY JOB
   public_artifact_integrity:
     name: Public artifact integrity
+    needs: trusted_head
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["self-hosted","Linux","X64"]') }}
     timeout-minutes: 10
@@ -112,12 +134,11 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-          package-manager-cache: false
       - name: Verify public artifact integrity
-        run: node ./scripts/verify-public-artifacts.cjs '--package-dir' '.'
+        run: node ./scripts/verify-private-artifacts.cjs
   # END PLASIUS PUBLIC ARTIFACT INTEGRITY JOB

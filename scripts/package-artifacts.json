@@ -1,0 +1,39 @@
+{
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "legal/CLA.md",
+    "legal/CORPORATE_CLA.md",
+    "legal/INDIVIDUAL_CLA.md"
+  ],
+  "paths": [
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "dist/browser.cjs",
+    "dist/browser.cjs.map",
+    "dist/browser.js",
+    "dist/browser.js.map",
+    "dist/index.cjs",
+    "dist/index.cjs.map",
+    "dist/index.js",
+    "dist/index.js.map",
+    "dist/xr.cjs",
+    "dist/xr.cjs.map",
+    "dist/xr.js",
+    "dist/xr.js.map",
+    "legal/CLA.md",
+    "legal/CORPORATE_CLA.md",
+    "legal/INDIVIDUAL_CLA.md",
+    "package.json",
+    "src/browser.d.ts",
+    "src/browser.js",
+    "src/index.d.ts",
+    "src/index.js",
+    "src/xr.d.ts",
+    "src/xr.js"
+  ]
+}
