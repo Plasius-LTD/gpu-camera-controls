@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Refresh security tooling and the published GPU camera dependency; validate clean installation, public artifacts, and existing camera-control behavior.
+
 ## [0.1.2] - 2026-11-17
 
 ### Fixed
